@@ -164,7 +164,10 @@ members = [
     "crates/project_symbols",
     "crates/prompt_store",
     "crates/proto",
+    "crates/minibuffer",
     "crates/recent_projects",
+    "crates/references_picker",
+    "crates/scratch_buffer",
     "crates/refineable",
     "crates/refineable/derive_refineable",
     "crates/release_channel",
@@ -428,7 +431,10 @@ project_panel = { path = "crates/project_panel" }
 project_symbols = { path = "crates/project_symbols" }
 prompt_store = { path = "crates/prompt_store" }
 proto = { path = "crates/proto" }
+minibuffer = { path = "crates/minibuffer" }
 recent_projects = { path = "crates/recent_projects" }
+references_picker = { path = "crates/references_picker" }
+scratch_buffer = { path = "crates/scratch_buffer" }
 refineable = { path = "crates/refineable" }
 release_channel = { path = "crates/release_channel" }
 remote = { path = "crates/remote" }
@@ -1018,6 +1024,7 @@ json_schema_store = { codegen-units = 1 }
 llama_cpp = { codegen-units = 1 }
 lmstudio = { codegen-units = 1 }
 menu = { codegen-units = 1 }
+minibuffer = { codegen-units = 1 }
 notifications = { codegen-units = 1 }
 ollama = { codegen-units = 1 }
 outline = { codegen-units = 1 }
@@ -1027,6 +1034,8 @@ project_symbols = { codegen-units = 1 }
 refineable = { codegen-units = 1 }
 release_channel = { codegen-units = 1 }
 reqwest_client = { codegen-units = 1 }
+references_picker = { codegen-units = 1 }
+scratch_buffer = { codegen-units = 1 }
 session = { codegen-units = 1 }
 sidebar = { codegen-units = 1 }
 snippet = { codegen-units = 1 }

@@ -90,7 +90,10 @@ impl SidebarStatus {
                     open: mw.sidebar_open() && enabled,
                     side: mw.sidebar_side(cx),
                     has_notifications: mw.sidebar_has_notifications(cx),
-                    show_toggle: enabled,
+                    // Keep the status bar minimal: never show the sidebar
+                    // (threads) toggle button. The sidebar can still be opened
+                    // via its action/keybinding.
+                    show_toggle: false,
                 }
             })
             .unwrap_or_default()

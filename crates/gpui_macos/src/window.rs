@@ -626,6 +626,14 @@ impl MacWindowState {
         })
     }
 
+    fn set_traffic_lights_visible(&self, visible: bool) {
+        if let Some(buttons) = self.traffic_light_buttons() {
+            buttons.close.setHidden(!visible);
+            buttons.minimize.setHidden(!visible);
+            buttons.zoom.setHidden(!visible);
+        }
+    }
+
     fn titlebar_container(close_button: &Objc2NSButton) -> Option<Retained<Objc2NSView>> {
         // SAFETY: `close_button` comes from AppKit's `standardWindowButton(_:)`.
         // Although `superview` is unsafe, objc2 returns each result as `Retained<NSView>`.
@@ -1296,6 +1304,10 @@ impl PlatformWindow for MacWindow {
         let mut state = self.0.lock();
         state.traffic_light_position = Some(position);
         state.move_traffic_light();
+    }
+
+    fn set_traffic_lights_visible(&self, visible: bool) {
+        self.0.lock().set_traffic_lights_visible(visible);
     }
 
     fn scale_factor(&self) -> f32 {

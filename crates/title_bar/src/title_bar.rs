@@ -104,6 +104,12 @@ pub fn init(cx: &mut App) {
         let item = cx.new(|cx| TitleBar::new("title-bar", workspace, multi_workspace, window, cx));
         workspace.set_titlebar_item(item.into(), window, cx);
 
+        // When the title bar is hidden, also hide the macOS traffic-light
+        // buttons so the editor has a clean top edge. (Applied at window setup;
+        // the setting notes a restart is required.)
+        #[cfg(target_os = "macos")]
+        window.set_traffic_lights_visible(TitleBarSettings::get_global(cx).show);
+
         workspace.register_action(|_workspace, _: &UseClassicLayout, _window, cx| {
             set_window_layout(WindowLayout::Editor(None), cx);
         });
@@ -225,6 +231,10 @@ impl Render for TitleBar {
         }
 
         let title_bar_settings = *TitleBarSettings::get_global(cx);
+        if !title_bar_settings.show {
+            // Collapse the title bar entirely; the editor fills the space above.
+            return div().h_0().w_full().into_any_element();
+        }
         let button_layout = title_bar_settings.button_layout;
         let is_git_enabled = ProjectSettings::get_global(cx).git.enabled.status;
 

@@ -230,10 +230,11 @@
   {
     "context": "vim_mode == normal",
     "bindings": {
+      "space .": "file_finder::FindFileInDirectory",
       "i": "vim::InsertBefore",
       "a": "vim::InsertAfter",
       "ctrl-[": "editor::Cancel",
-      ":": "command_palette::Toggle",
+      ":": "minibuffer::StartCommand",
       "c": "vim::PushChange",
       "shift-c": "vim::ChangeToEndOfLine",
       "d": "vim::PushDelete",

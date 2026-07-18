@@ -11143,6 +11143,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "minibuffer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "command_palette_hooks",
+ "editor",
+ "gpui",
+ "language",
+ "menu",
+ "project",
+ "settings",
+ "theme",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "minidump-common"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15127,6 +15145,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "references_picker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "fuzzy",
+ "gpui",
+ "language",
+ "picker",
+ "project",
+ "text",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16216,6 +16251,24 @@ name = "scratch"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
+
+[[package]]
+name = "scratch_buffer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "fs",
+ "gpui",
+ "language",
+ "log",
+ "paths",
+ "project",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
+]
 
 [[package]]
 name = "screencapturekit"
@@ -23233,6 +23286,7 @@ dependencies = [
  "menu",
  "migrator",
  "mimalloc",
+ "minibuffer",
  "miniprofiler_ui",
  "node_runtime",
  "notifications",
@@ -23252,12 +23306,14 @@ dependencies = [
  "proto",
  "rayon",
  "recent_projects",
+ "references_picker",
  "release_channel",
  "remote",
  "repl",
  "reqwest_client",
  "rope",
  "sandbox",
+ "scratch_buffer",
  "search",
  "semver",
  "serde",

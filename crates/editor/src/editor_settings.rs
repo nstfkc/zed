@@ -132,7 +132,7 @@ impl Minimap {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Gutter {
     pub min_line_number_digits: usize,
     pub line_numbers: bool,
@@ -140,6 +140,8 @@ pub struct Gutter {
     pub breakpoints: bool,
     pub bookmarks: bool,
     pub folds: bool,
+    pub line_number_padding_left: gpui::Pixels,
+    pub line_number_padding_right: gpui::Pixels,
 }
 
 /// Forcefully enable or disable the scrollbar for each axis
@@ -257,6 +259,10 @@ impl Settings for EditorSettings {
                 bookmarks: gutter.bookmarks.unwrap(),
                 breakpoints: gutter.breakpoints.unwrap(),
                 folds: gutter.folds.unwrap(),
+                line_number_padding_left: gpui::px(gutter.line_number_padding_left.unwrap() as f32),
+                line_number_padding_right: gpui::px(
+                    gutter.line_number_padding_right.unwrap() as f32
+                ),
             },
             scroll_beyond_last_line: editor.scroll_beyond_last_line.unwrap(),
             vertical_scroll_margin: editor.vertical_scroll_margin.unwrap() as f64,

@@ -493,6 +493,14 @@ pub struct GutterContent {
     ///
     /// Default: 4
     pub min_line_number_digits: Option<usize>,
+    /// Horizontal padding (in pixels) to the left of the line numbers.
+    ///
+    /// Default: 4
+    pub line_number_padding_left: Option<usize>,
+    /// Horizontal padding (in pixels) between the line numbers and the code.
+    ///
+    /// Default: 6
+    pub line_number_padding_right: Option<usize>,
     /// Whether to show runnable buttons in the gutter.
     ///
     /// Default: true
