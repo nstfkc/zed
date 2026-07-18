@@ -1,0 +1,19 @@
+[package]
+name = "minibuffer"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/minibuffer.rs"
+doctest = false
+
+[dependencies]
+gpui.workspace = true
+menu.workspace = true
+ui.workspace = true
+workspace.workspace = true

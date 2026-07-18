@@ -11143,6 +11143,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "minibuffer"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "menu",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "minidump-common"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23250,6 +23260,7 @@ dependencies = [
  "menu",
  "migrator",
  "mimalloc",
+ "minibuffer",
  "miniprofiler_ui",
  "node_runtime",
  "notifications",
