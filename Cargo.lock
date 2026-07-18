@@ -15127,6 +15127,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "references_picker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "fuzzy",
+ "gpui",
+ "language",
+ "picker",
+ "project",
+ "text",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23252,6 +23269,7 @@ dependencies = [
  "proto",
  "rayon",
  "recent_projects",
+ "references_picker",
  "release_channel",
  "remote",
  "repl",

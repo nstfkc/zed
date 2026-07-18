@@ -629,24 +629,31 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let line_ending_indicator =
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
         let git_blame_status = cx.new(|_| git_ui::GitBlameStatus::default());
+        let git_branch_status = cx.new(|cx| git_ui::GitBranchStatus::new(workspace, cx));
         let merge_conflict_indicator =
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(search_button, window, cx);
-            status_bar.add_left_item(lsp_button, window, cx);
-            status_bar.add_left_item(diagnostic_summary, window, cx);
-            status_bar.add_left_item(active_file_name, window, cx);
-            status_bar.add_left_item(git_blame_status, window, cx);
-            status_bar.add_left_item(merge_conflict_indicator, window, cx);
-            status_bar.add_left_item(activity_indicator, window, cx);
-            status_bar.add_right_item(edit_prediction_ui, window, cx);
-            status_bar.add_right_item(active_buffer_encoding, window, cx);
+            // Minimal status bar: vim mode indicator on the left; file language,
+            // branch, and diagnostics on the right. (Right items render
+            // right-to-left, so the first added sits at the far right.)
+            let _ = (
+                &search_button,
+                &lsp_button,
+                &active_file_name,
+                &git_blame_status,
+                &merge_conflict_indicator,
+                &activity_indicator,
+                &edit_prediction_ui,
+                &active_buffer_encoding,
+                &active_toolchain_language,
+                &line_ending_indicator,
+                &cursor_position,
+                &image_info,
+            );
+            status_bar.add_left_item(vim_mode_indicator, window, cx);
+            status_bar.add_right_item(diagnostic_summary, window, cx);
+            status_bar.add_right_item(git_branch_status, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
-            status_bar.add_right_item(active_toolchain_language, window, cx);
-            status_bar.add_right_item(line_ending_indicator, window, cx);
-            status_bar.add_right_item(vim_mode_indicator, window, cx);
-            status_bar.add_right_item(cursor_position, window, cx);
-            status_bar.add_right_item(image_info, window, cx);
         });
 
         let panels_task = initialize_panels(window, cx);
@@ -773,8 +780,13 @@ fn show_software_emulation_warning_if_needed(
 }
 
 fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<anyhow::Result<()>> {
+    // When the project panel is disabled it is never created, so the file tree
+    // can neither be opened nor restored from a previous session.
+    let project_panel_enabled =
+        project_panel::project_panel_settings::ProjectPanelSettings::get_global(cx).enabled;
     cx.spawn_in(window, async move |workspace_handle, cx| {
-        let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
+        let project_panel = project_panel_enabled
+            .then(|| ProjectPanel::load(workspace_handle.clone(), cx.clone()));
         let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
@@ -797,8 +809,18 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             }
         }
 
+        let project_panel_task = {
+            let workspace_handle = workspace_handle.clone();
+            let cx = cx.clone();
+            async move {
+                if let Some(project_panel) = project_panel {
+                    add_panel_when_ready(project_panel, workspace_handle, cx).await;
+                }
+            }
+        };
+
         futures::join!(
-            add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
+            project_panel_task,
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),

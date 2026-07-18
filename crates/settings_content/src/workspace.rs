@@ -780,6 +780,11 @@ pub struct ProjectPanelSettingsContent {
     ///
     /// Default: true
     pub starts_open: Option<bool>,
+    /// Whether the project panel (file tree) is available at all. When false,
+    /// the panel is never created, so it can't be opened or restored.
+    ///
+    /// Default: true
+    pub enabled: Option<bool>,
     /// Scrollbar-related settings
     pub scrollbar: Option<ProjectPanelScrollbarSettingsContent>,
     /// Which files containing diagnostic errors/warnings to mark in the project panel.

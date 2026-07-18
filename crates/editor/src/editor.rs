@@ -11599,6 +11599,12 @@ impl EditorSnapshot {
 
             let is_singleton = self.buffer_snapshot().is_singleton();
 
+            // Line-number padding is configurable via `gutter.line_number_padding_left`
+            // and `gutter.line_number_padding_right`, rather than a full character width,
+            // so the gutter isn't dominated by whitespace.
+            let line_number_padding_left = gutter_settings.line_number_padding_left;
+            let line_number_padding_right = gutter_settings.line_number_padding_right;
+
             let left_padding = git_blame_entries_width.unwrap_or(Pixels::ZERO)
                 + if !is_singleton {
                     ch_width * 4.0
@@ -11606,10 +11612,12 @@ impl EditorSnapshot {
                 // if all three are there only the runnable is shown
                 } else if show_runnables || show_breakpoints || show_bookmarks {
                     ch_width * 3.0
+                // Keep room for the git diff gutter, plus the configured padding
+                // for the line numbers themselves.
                 } else if show_git_gutter && show_line_numbers {
-                    ch_width * 2.0
+                    ch_width + line_number_padding_left
                 } else if show_git_gutter || show_line_numbers {
-                    ch_width
+                    line_number_padding_left
                 } else {
                     px(0.)
                 };
@@ -11617,11 +11625,11 @@ impl EditorSnapshot {
             let shows_folds = is_singleton && gutter_settings.folds;
 
             let right_padding = if shows_folds && show_line_numbers {
-                ch_width * 4.0
+                ch_width * 3.0 + line_number_padding_right
             } else if shows_folds || (!is_singleton && show_line_numbers) {
                 ch_width * 3.0
             } else if show_line_numbers {
-                ch_width
+                line_number_padding_right
             } else {
                 px(0.)
             };

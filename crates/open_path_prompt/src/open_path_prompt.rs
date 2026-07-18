@@ -1,3 +1,4 @@
+pub mod directory_finder;
 pub mod file_finder_settings;
 
 #[cfg(test)]
@@ -927,7 +928,7 @@ fn path_candidates(
         .collect()
 }
 
-fn get_dir_and_suffix(query: String, path_style: PathStyle) -> (String, String) {
+pub(crate) fn get_dir_and_suffix(query: String, path_style: PathStyle) -> (String, String) {
     match path_style {
         PathStyle::Unix => {
             let (mut dir, suffix) = if let Some(index) = query.rfind('/') {

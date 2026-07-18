@@ -230,6 +230,7 @@
   {
     "context": "vim_mode == normal",
     "bindings": {
+      "space .": "file_finder::FindFileInDirectory",
       "i": "vim::InsertBefore",
       "a": "vim::InsertAfter",
       "ctrl-[": "editor::Cancel",

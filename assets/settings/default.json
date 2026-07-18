@@ -544,6 +544,9 @@
   "use_system_window_tabs": false,
   // Titlebar related settings
   "title_bar": {
+    // Whether to show the title bar at all. When false, the title bar and (on
+    // macOS) the traffic-light buttons are hidden. Requires restarting Zed.
+    "show": true,
     // Whether to show git status indicators on the branch icon in the titlebar.
     "show_branch_status_icon": false,
     // Whether to show the branch name button in the titlebar.
@@ -685,6 +688,10 @@
     "folds": true,
     // Minimum number of characters to reserve space for in the gutter.
     "min_line_number_digits": 4,
+    // Horizontal padding (in pixels) to the left of the line numbers.
+    "line_number_padding_left": 4,
+    // Horizontal padding (in pixels) between the line numbers and the code.
+    "line_number_padding_right": 6,
   },
   "indent_guides": {
     // Whether to show indent guides in the editor.
@@ -795,6 +802,9 @@
   // Can be a combination of "left", "right" and "bottom".
   "resize_all_panels_in_dock": ["left"],
   "project_panel": {
+    // Whether the project panel (file tree) is available at all. When false,
+    // the panel is never created, so it can't be opened or restored.
+    "enabled": true,
     // Whether to show the project panel button in the status bar
     "button": true,
     // Whether to hide the gitignore entries in the project panel.
