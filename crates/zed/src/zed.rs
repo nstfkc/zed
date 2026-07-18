@@ -614,7 +614,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|cx| toolchain_selector::ActiveToolchain::new(workspace, window, cx));
         let vim_mode_indicator = cx.new(|cx| vim::ModeIndicator::new(window, cx));
         let image_info = cx.new(|_cx| ImageInfo::new(workspace));
-        let minibuffer = cx.new(|cx| minibuffer::MiniBuffer::new(workspace, window, cx));
 
         let lsp_button_menu_handle = PopoverMenuHandle::default();
         let lsp_button =
@@ -634,10 +633,9 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let merge_conflict_indicator =
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
-            // Minimal status bar: vim mode indicator and the ":" command line
-            // on the left; file language, branch, and diagnostics on the right.
-            // (Right items render right-to-left, so the first added sits at the
-            // far right.)
+            // Minimal status bar: vim mode indicator on the left; file language,
+            // branch, and diagnostics on the right. (Right items render
+            // right-to-left, so the first added sits at the far right.)
             let _ = (
                 &search_button,
                 &lsp_button,
@@ -653,7 +651,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 &image_info,
             );
             status_bar.add_left_item(vim_mode_indicator, window, cx);
-            status_bar.add_left_item(minibuffer, window, cx);
             status_bar.add_right_item(diagnostic_summary, window, cx);
             status_bar.add_right_item(git_branch_status, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);

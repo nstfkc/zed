@@ -590,7 +590,6 @@ fn main() {
         // --gc-sections otherwise drops them (each is reached only via a trivial
         // init() call), taking the `inventory` action-registration static with
         // them, so their actions become unknown to keymaps.
-        std::hint::black_box(scratch_buffer::init as fn(&mut gpui::App));
         std::hint::black_box(references_picker::init as fn(&mut gpui::App));
 
         zed::init(cx);
@@ -779,8 +778,6 @@ fn main() {
         notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         collab_ui::init(&app_state, cx);
         git_ui::init(cx);
-        minibuffer::init(cx);
-        scratch_buffer::init(cx);
         references_picker::init(cx);
         feedback::init(cx);
         markdown_preview::init(cx);

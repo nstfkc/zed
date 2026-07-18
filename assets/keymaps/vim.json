@@ -234,7 +234,7 @@
       "i": "vim::InsertBefore",
       "a": "vim::InsertAfter",
       "ctrl-[": "editor::Cancel",
-      ":": "minibuffer::StartCommand",
+      ":": "command_palette::Toggle",
       "c": "vim::PushChange",
       "shift-c": "vim::ChangeToEndOfLine",
       "d": "vim::PushDelete",

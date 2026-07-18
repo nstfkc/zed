@@ -156,7 +156,6 @@ markdown.workspace = true
 markdown_preview.workspace = true
 menu.workspace = true
 migrator.workspace = true
-minibuffer.workspace = true
 miniprofiler_ui.workspace = true
 mimalloc = { version = "0.1", optional = true }
 node_runtime.workspace = true
@@ -175,7 +174,6 @@ prompt_store.workspace = true
 proto.workspace = true
 recent_projects.workspace = true
 references_picker.workspace = true
-scratch_buffer.workspace = true
 release_channel.workspace = true
 remote.workspace = true
 repl.workspace = true
