@@ -42,6 +42,7 @@ language_model.workspace = true
 log.workspace = true
 markdown.workspace = true
 menu.workspace = true
+minibuffer.workspace = true
 multi_buffer.workspace = true
 notifications.workspace = true
 panel.workspace = true

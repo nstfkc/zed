@@ -7424,6 +7424,7 @@ dependencies = [
  "log",
  "markdown",
  "menu",
+ "minibuffer",
  "multi_buffer",
  "notifications",
  "panel",
