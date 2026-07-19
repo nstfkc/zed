@@ -7,6 +7,9 @@
 //!
 //! In this iteration it only opens and closes: `minibuffer::Toggle` opens it (or
 //! closes it if already open), and Escape dismisses it.
+//!
+//! Content can be shown in the default fixed-height panel or, by opting into
+//! single-line mode, in a strip that is exactly one line of text tall.
 
 use gpui::{
     AnyView, App, Context, DismissEvent, Entity, FocusHandle, Focusable, ManagedView, Pixels,
@@ -18,6 +21,16 @@ use workspace::Workspace;
 /// Fixed height of the minibuffer panel. Provisional until features that live in
 /// the minibuffer need to size it themselves.
 const MINIBUFFER_HEIGHT: Pixels = px(400.);
+
+/// Height of the minibuffer chrome: one line of text in single-line mode,
+/// otherwise the fixed panel height.
+fn minibuffer_height(single_line: bool, window: &Window) -> Pixels {
+    if single_line {
+        window.line_height()
+    } else {
+        MINIBUFFER_HEIGHT
+    }
+}
 
 actions!(
     minibuffer,
@@ -65,6 +78,18 @@ pub fn show<V: ManagedView>(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    show_with_options(workspace, view, false, window, cx);
+}
+
+/// Same as [`show`], but lets the caller opt into single-line mode, where the
+/// minibuffer is only one line tall instead of the full fixed-height panel.
+pub fn show_with_options<V: ManagedView>(
+    workspace: &mut Workspace,
+    view: Entity<V>,
+    single_line: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let previous_focus = window.focused(cx);
     let focus_handle = view.focus_handle(cx);
     let subscription = cx.subscribe_in(&view, window, {
@@ -81,6 +106,7 @@ pub fn show<V: ManagedView>(
     });
     let host = cx.new(|_| MinibufferHost {
         content: view.into(),
+        single_line,
         _subscription: subscription,
     });
     workspace.set_bottom_panel(host, cx);
@@ -91,14 +117,15 @@ pub fn show<V: ManagedView>(
 /// dismiss subscription so it lives exactly as long as the panel is shown.
 struct MinibufferHost {
     content: AnyView,
+    single_line: bool,
     _subscription: Subscription,
 }
 
 impl Render for MinibufferHost {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w_full()
-            .h(MINIBUFFER_HEIGHT)
+            .h(minibuffer_height(self.single_line, window))
             .flex_shrink_0()
             .overflow_hidden()
             .border_t_1()
@@ -113,6 +140,7 @@ pub struct MiniBuffer {
     focus_handle: FocusHandle,
     /// Focus to restore when the minibuffer closes, captured at open time.
     previous_focus: Option<FocusHandle>,
+    single_line: bool,
 }
 
 impl MiniBuffer {
@@ -125,7 +153,13 @@ impl MiniBuffer {
             workspace,
             focus_handle: cx.focus_handle(),
             previous_focus: window.focused(cx),
+            single_line: false,
         }
+    }
+
+    pub fn set_single_line(&mut self, single_line: bool, cx: &mut Context<Self>) {
+        self.single_line = single_line;
+        cx.notify();
     }
 
     fn cancel(&mut self, _: &menu::Cancel, window: &mut Window, cx: &mut Context<Self>) {
@@ -140,13 +174,13 @@ impl MiniBuffer {
 }
 
 impl Render for MiniBuffer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .key_context("MiniBuffer")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .w_full()
-            .h(MINIBUFFER_HEIGHT)
+            .h(minibuffer_height(self.single_line, window))
             .flex_shrink_0()
             .border_t_1()
             .border_color(cx.theme().colors().border)
