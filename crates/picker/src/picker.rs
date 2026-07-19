@@ -637,6 +637,20 @@ impl<D: PickerDelegate> Picker<D> {
         self
     }
 
+    /// Makes the picker span the full width of its container (up to the
+    /// viewport) instead of opening at a fixed modal width, and lets it shrink to
+    /// match. Intended for embedding in a full-width surface such as the
+    /// minibuffer.
+    pub fn full_width(mut self) -> Self {
+        let full = shape::RelativeWidth::viewport(1.0);
+        self.default_shape.width = full;
+        self.size_bounds.max_width = full;
+        if self.live_shape_is_hidden_default() {
+            self.shape.set_initial_width(full);
+        }
+        self
+    }
+
     /// Overrides the picker's max height. Plain pickers default to
     /// [`DEFAULT_MODAL_MAX_HEIGHT`] and shrink below it to fit their content;
     /// only call this for pickers that want a different cap (e.g. the outline

@@ -88,9 +88,10 @@ impl CommandPalette {
         };
 
         let entity = cx.weak_entity();
-        workspace.toggle_modal(window, cx, move |window, cx| {
+        let palette = cx.new(|cx| {
             CommandPalette::new(previous_focus_handle, query, entity, window, cx)
         });
+        minibuffer::show(workspace, palette, window, cx);
     }
 
     fn new(
@@ -128,7 +129,9 @@ impl CommandPalette {
             // One-shot action; there's nothing to reopen.
             let picker = Picker::uniform_list(delegate, window, cx)
                 .reopenable(false, cx)
-                .show_scrollbar(true);
+                .show_scrollbar(true)
+                .embedded()
+                .full_width();
             picker.set_query(query, window, cx);
             picker
         });

@@ -9,7 +9,8 @@
 //! closes it if already open), and Escape dismisses it.
 
 use gpui::{
-    App, Context, FocusHandle, Focusable, Pixels, Render, WeakEntity, Window, actions, px,
+    AnyView, App, Context, DismissEvent, Entity, FocusHandle, Focusable, ManagedView, Pixels,
+    Render, Subscription, WeakEntity, Window, actions, px,
 };
 use ui::prelude::*;
 use workspace::Workspace;
@@ -51,6 +52,60 @@ fn toggle(workspace: &mut Workspace, _: &Toggle, window: &mut Window, cx: &mut C
     let focus_handle = minibuffer.read(cx).focus_handle.clone();
     workspace.set_bottom_panel(minibuffer, cx);
     window.focus(&focus_handle, cx);
+}
+
+/// Shows a dismissable view (typically a picker wrapper) inside the minibuffer,
+/// replacing any existing bottom-panel content. The view is focused, and when it
+/// emits [`DismissEvent`] the minibuffer closes; focus is restored to whatever
+/// was focused beforehand, but only if the view still holds focus (so confirming
+/// a picker — which moves focus to what it opened — doesn't steal it back).
+pub fn show<V: ManagedView>(
+    workspace: &mut Workspace,
+    view: Entity<V>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let previous_focus = window.focused(cx);
+    let focus_handle = view.focus_handle(cx);
+    let subscription = cx.subscribe_in(&view, window, {
+        let focus_handle = focus_handle.clone();
+        move |workspace, _, _: &DismissEvent, window, cx| {
+            let restore_focus = focus_handle.contains_focused(window, cx);
+            workspace.clear_bottom_panel(cx);
+            if restore_focus
+                && let Some(previous_focus) = &previous_focus
+            {
+                previous_focus.focus(window, cx);
+            }
+        }
+    });
+    let host = cx.new(|_| MinibufferHost {
+        content: view.into(),
+        _subscription: subscription,
+    });
+    workspace.set_bottom_panel(host, cx);
+    window.focus(&focus_handle, cx);
+}
+
+/// Wraps minibuffer content in the fixed-height bottom-panel chrome. Holds the
+/// dismiss subscription so it lives exactly as long as the panel is shown.
+struct MinibufferHost {
+    content: AnyView,
+    _subscription: Subscription,
+}
+
+impl Render for MinibufferHost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w_full()
+            .h(MINIBUFFER_HEIGHT)
+            .flex_shrink_0()
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(cx.theme().colors().border)
+            .bg(cx.theme().colors().elevated_surface_background)
+            .child(self.content.clone())
+    }
 }
 
 pub struct MiniBuffer {

@@ -24,6 +24,7 @@ db.workspace = true
 fuzzy_nucleo.workspace = true
 gpui.workspace = true
 menu.workspace = true
+minibuffer.workspace = true
 log.workspace = true
 picker.workspace = true
 postage.workspace = true

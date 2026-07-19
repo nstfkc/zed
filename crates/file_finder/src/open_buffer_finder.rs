@@ -31,9 +31,12 @@ pub fn register(
 ) {
     workspace.register_action(|workspace, _: &ToggleOpenBuffers, window, cx| {
         let workspace_handle = cx.entity().downgrade();
-        workspace.toggle_modal(window, cx, |window, cx| {
-            OpenBufferFinder::new(workspace_handle, window, cx)
-        });
+        // Read entries straight from the borrowed workspace. Reading it back
+        // through the entity map (as the delegate used to) while this action
+        // handler holds it mutably borrowed double-leases and panics.
+        let entries = collect_entries(workspace, cx);
+        let finder = cx.new(|cx| OpenBufferFinder::new(workspace_handle, entries, window, cx));
+        minibuffer::show(workspace, finder, window, cx);
     });
 }
 
@@ -46,11 +49,12 @@ pub struct OpenBufferFinder {
 impl OpenBufferFinder {
     fn new(
         workspace: WeakEntity<Workspace>,
+        entries: Vec<BufferEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let delegate = OpenBufferFinderDelegate::new(workspace, cx);
-        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
+        let delegate = OpenBufferFinderDelegate::new(workspace, entries);
+        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx).embedded().full_width());
         cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| cx.emit(DismissEvent))
             .detach();
         let focus_handle = picker.focus_handle(cx);
@@ -92,10 +96,7 @@ pub struct OpenBufferFinderDelegate {
 }
 
 impl OpenBufferFinderDelegate {
-    fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<OpenBufferFinder>) -> Self {
-        let entries = workspace
-            .read_with(cx, |workspace, cx| collect_entries(workspace, cx))
-            .unwrap_or_default();
+    fn new(workspace: WeakEntity<Workspace>, entries: Vec<BufferEntry>) -> Self {
         Self {
             workspace,
             entries,

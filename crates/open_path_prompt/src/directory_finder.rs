@@ -68,7 +68,7 @@ fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
         .and_then(|dir| dir.strip_prefix(&root).map(|relative| relative.to_string()))
         .unwrap_or_default();
     let workspace_handle = cx.entity().downgrade();
-    workspace.toggle_modal(window, cx, |window, cx| {
+    let finder = cx.new(|cx| {
         DirectoryFinder::new(
             workspace_handle,
             lister,
@@ -79,6 +79,7 @@ fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
             cx,
         )
     });
+    minibuffer::show(workspace, finder, window, cx);
 }
 
 /// Thin modal wrapper around the picker, giving the finder its own key context
@@ -99,7 +100,7 @@ impl DirectoryFinder {
         cx: &mut Context<Self>,
     ) -> Self {
         let delegate = DirectoryFinderDelegate::new(workspace, lister, path_style, root);
-        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
+        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx).embedded().full_width());
         picker.update(cx, |picker, cx| picker.set_query(start_query, window, cx));
         cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| cx.emit(DismissEvent))
             .detach();

@@ -160,7 +160,7 @@ impl FileFinder {
                 .update_in(cx, |workspace, window, cx| {
                     let project = workspace.project().clone();
                     let weak_workspace = cx.entity().downgrade();
-                    workspace.toggle_modal(window, cx, |window, cx| {
+                    let finder = cx.new(|cx| {
                         let delegate = FileFinderDelegate::new(
                             cx.entity().downgrade(),
                             weak_workspace,
@@ -175,6 +175,7 @@ impl FileFinder {
 
                         FileFinder::new(delegate, window, cx)
                     });
+                    minibuffer::show(workspace, finder, window, cx);
                 })
                 .ok();
         })
@@ -189,6 +190,8 @@ impl FileFinder {
         let picker = cx.new(|cx| {
             Picker::uniform_list_with_preview(delegate, preview, window, cx)
                 .initial_width(Rems::from_pixels(modal_max_width, window))
+                .embedded()
+                .full_width()
         });
         let picker_focus_handle = picker.focus_handle(cx);
         picker.update(cx, |picker, _| {
