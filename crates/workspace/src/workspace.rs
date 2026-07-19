@@ -1388,6 +1388,10 @@ pub struct Workspace {
     status_bar: Entity<StatusBar>,
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
+    // A single transient view (e.g. the minibuffer) laid out as a full-width
+    // strip below the status bar. It occupies real layout space, so opening it
+    // reflows the status bar and center upward rather than covering them.
+    bottom_panel: Option<AnyView>,
     titlebar_item: Option<AnyView>,
     titlebar_focus_handle: FocusHandle,
     region_focus_handles: RegionFocusHandles,
@@ -1841,6 +1845,7 @@ impl Workspace {
             status_bar,
             modal_layer,
             toast_layer,
+            bottom_panel: None,
             titlebar_item: None,
             titlebar_focus_handle: cx.focus_handle(),
             region_focus_handles: RegionFocusHandles::new(cx),
@@ -2601,6 +2606,26 @@ impl Workspace {
 
     pub fn status_bar(&self) -> &Entity<StatusBar> {
         &self.status_bar
+    }
+
+    /// The transient bottom panel (e.g. the minibuffer), if one is open.
+    pub fn bottom_panel(&self) -> Option<&AnyView> {
+        self.bottom_panel.as_ref()
+    }
+
+    /// Shows a transient view as a full-width strip below the status bar,
+    /// replacing any existing one. The view lays out with real height, so the
+    /// status bar and center reflow upward to make room.
+    pub fn set_bottom_panel(&mut self, panel: impl Into<AnyView>, cx: &mut Context<Self>) {
+        self.bottom_panel = Some(panel.into());
+        cx.notify();
+    }
+
+    /// Removes the transient bottom panel if one is open.
+    pub fn clear_bottom_panel(&mut self, cx: &mut Context<Self>) {
+        if self.bottom_panel.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn set_sidebar_focus_handle(&mut self, handle: Option<FocusHandle>) {
@@ -9449,6 +9474,7 @@ impl Render for Workspace {
                     .when(self.status_bar_visible(cx), |parent| {
                         parent.child(self.status_bar.clone())
                     })
+                    .children(self.bottom_panel.clone())
                     .child(self.toast_layer.clone()),
             )
     }
