@@ -87,6 +87,30 @@ pub fn open(
     })
 }
 
+/// Opens the branch picker inside the workspace's minibuffer instead of a
+/// centered modal, for the keyboard-driven full-screen Git panel.
+pub fn open_in_minibuffer(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let workspace_handle = workspace.weak_handle();
+    let repository = workspace.project().read(cx).active_repository(cx);
+
+    let branch_list = cx.new(|cx| {
+        BranchList::new_embedded(
+            workspace_handle,
+            repository,
+            rems(34.),
+            true,
+            true,
+            window,
+            cx,
+        )
+    });
+    minibuffer::show(workspace, branch_list, window, cx);
+}
+
 pub fn popover(
     workspace: WeakEntity<Workspace>,
     modal_style: bool,
@@ -163,7 +187,7 @@ pub fn create_embedded(
     window: &mut Window,
     cx: &mut Context<BranchList>,
 ) -> BranchList {
-    BranchList::new_embedded(workspace, repository, width, show_footer, window, cx)
+    BranchList::new_embedded(workspace, repository, width, show_footer, false, window, cx)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -188,7 +212,9 @@ impl BranchList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut this = Self::new_inner(workspace, repository, style, width, false, window, cx);
+        let mut this = Self::new_inner(
+            workspace, repository, style, width, false, false, window, cx,
+        );
         this._subscriptions
             .push(cx.subscribe(&this.picker, |this, _, _, cx| {
                 if !this.branch_filter_menu_open(cx) {
@@ -204,6 +230,7 @@ impl BranchList {
         style: BranchListStyle,
         width: Rems,
         embedded: bool,
+        full_width: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -213,6 +240,7 @@ impl BranchList {
             style,
             width,
             embedded,
+            full_width,
             BranchSelectionBehavior::Checkout,
             window,
             cx,
@@ -234,6 +262,7 @@ impl BranchList {
             repository,
             style,
             width,
+            false,
             false,
             BranchSelectionBehavior::Select {
                 selected_branch,
@@ -257,6 +286,7 @@ impl BranchList {
         style: BranchListStyle,
         width: Rems,
         embedded: bool,
+        full_width: bool,
         branch_selection_behavior: BranchSelectionBehavior,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -293,6 +323,7 @@ impl BranchList {
                 .initial_width(width)
                 .show_scrollbar(true)
                 .when(embedded, |picker| picker.embedded())
+                .when(full_width, |picker| picker.full_width())
         });
         let picker_focus_handle = picker.focus_handle(cx);
 
@@ -363,6 +394,7 @@ impl BranchList {
         repository: Option<Entity<Repository>>,
         width: Rems,
         show_footer: bool,
+        full_width: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -372,6 +404,7 @@ impl BranchList {
             BranchListStyle::Modal,
             width,
             true,
+            full_width,
             window,
             cx,
         );

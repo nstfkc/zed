@@ -1113,6 +1113,7 @@
       "s": "git::StageFile",
       "u": "git::UnstageFile",
       "c c": "git_panel::FocusEditor",
+      "b b": "git_panel::SelectBranch",
       "tab": "menu::SecondaryConfirm",
       "enter": "git::ViewFile",
     },

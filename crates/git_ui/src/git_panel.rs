@@ -123,6 +123,8 @@ actions!(
         FocusEditor,
         /// Hides the full-screen commit message editor without committing.
         HideCommitEditor,
+        /// Lists branches in the minibuffer to check one out.
+        SelectBranch,
         /// Focuses on the changes list.
         FocusChanges,
         /// Select next git panel menu item, and show it in the diff view
@@ -426,7 +428,9 @@ pub fn build_empty_pane_content(
         .project()
         .read(cx)
         .active_repository(cx)?;
-    let panel = workspace.update(cx, |workspace, cx| GitPanel::new_full_screen(workspace, window, cx));
+    let panel = workspace.update(cx, |workspace, cx| {
+        GitPanel::new_full_screen(workspace, window, cx)
+    });
     let focus_handle = panel.focus_handle(cx);
     Some(workspace::EmptyPaneContent {
         view: panel.into(),
@@ -1939,6 +1943,14 @@ impl GitPanel {
             window.focus(&editor.focus_handle(cx), cx);
         });
         cx.notify();
+    }
+
+    fn select_branch(&mut self, _: &SelectBranch, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, cx| {
+                branch_picker::open_in_minibuffer(workspace, window, cx);
+            })
+            .log_err();
     }
 
     /// Hides the full-screen commit editor without committing and returns focus
@@ -8096,6 +8108,7 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::focus_changes_list))
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::hide_commit_editor))
+            .on_action(cx.listener(Self::select_branch))
             .on_action(cx.listener(Self::expand_commit_editor))
             .when(has_write_access && has_co_authors, |git_panel| {
                 git_panel.on_action(cx.listener(Self::toggle_fill_co_authors))
@@ -12171,6 +12184,54 @@ mod tests {
 
         // Empty title never exceeds a positive limit
         assert!(!commit_title_exceeds_limit("", 72));
+    }
+
+    #[gpui::test]
+    async fn test_select_branch_opens_branch_list_in_minibuffer(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "tracked": "tracked\n",
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let panel = workspace.update_in(cx, GitPanel::new);
+
+        workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.bottom_panel().is_none());
+        });
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.focus_handle.focus(window, cx);
+            panel.select_branch(&SelectBranch, window, cx);
+        });
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, _| {
+            assert!(
+                workspace.bottom_panel().is_some(),
+                "branch list should be shown in the minibuffer"
+            );
+        });
+
+        let changes_list_focused =
+            panel.update_in(cx, |panel, window, _| panel.focus_handle.is_focused(window));
+        assert!(
+            !changes_list_focused,
+            "minibuffer content should take focus from the changes list"
+        );
     }
 
     #[gpui::test]
