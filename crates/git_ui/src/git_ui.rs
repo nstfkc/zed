@@ -87,6 +87,8 @@ pub fn init(cx: &mut App) {
     commit_view::init(cx);
     git_graph::init(cx);
 
+    workspace::set_empty_pane_content_builder(git_panel::build_empty_pane_content, cx);
+
     cx.observe_new(|editor: &mut Editor, _, cx| {
         conflict_view::register_editor(editor, editor.buffer().clone(), cx);
     })

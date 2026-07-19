@@ -452,6 +452,7 @@ pub struct Pane {
     /// If a certain project item wants to get recreated with specific data, it can persist its data before the recreation here.
     pub project_item_restoration_data: HashMap<ProjectItemKind, Box<dyn Any + Send>>,
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
+    empty_pane_content: Option<crate::EmptyPaneContent>,
 
     pub in_center_group: bool,
 }
@@ -624,6 +625,7 @@ impl Pane {
             diagnostic_summary_update: Task::ready(()),
             project_item_restoration_data: HashMap::default(),
             welcome_page: None,
+            empty_pane_content: None,
             in_center_group: false,
         }
     }
@@ -836,6 +838,45 @@ impl Pane {
 
     pub fn set_should_display_welcome_page(&mut self, should_display_welcome_page: bool) {
         self.should_display_welcome_page = should_display_welcome_page;
+    }
+
+    /// Returns the content to render as the background of this pane when it has
+    /// no items but the project has visible worktrees, lazily building it from
+    /// the registered builder (e.g. the full-screen Git panel).
+    fn empty_pane_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<&crate::EmptyPaneContent> {
+        if self.active_item().is_some() {
+            return None;
+        }
+        let has_worktrees = self
+            .project
+            .upgrade()
+            .is_some_and(|project| project.read(cx).visible_worktrees(cx).next().is_some());
+        if !has_worktrees {
+            return None;
+        }
+        if self.empty_pane_content.is_none()
+            && let Some(builder) = crate::empty_pane_content_builder(cx)
+        {
+            self.empty_pane_content = builder(self.workspace.clone(), window, cx);
+        }
+        self.empty_pane_content.as_ref()
+    }
+
+    /// Focuses this pane's empty-pane content (e.g. the full-screen Git panel)
+    /// if it is currently shown, returning whether focus was moved. Used to make
+    /// the empty-pane dashboard keyboard-interactive on demand without stealing
+    /// focus (and its key context) the moment the pane is focused.
+    pub fn focus_empty_pane_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(content) = self.empty_pane_content(window, cx) else {
+            return false;
+        };
+        let focus_handle = content.focus_handle.clone();
+        focus_handle.focus(window, cx);
+        true
     }
 
     pub fn set_can_split(
@@ -4507,7 +4548,9 @@ impl Render for Pane {
                                         }
                                     },
                                 ));
-                            if has_worktrees || !self.should_display_welcome_page {
+                            if let Some(content) = self.empty_pane_content(window, cx) {
+                                placeholder.child(content.view.clone())
+                            } else if has_worktrees || !self.should_display_welcome_page {
                                 placeholder
                             } else {
                                 if self.welcome_page.is_none() {

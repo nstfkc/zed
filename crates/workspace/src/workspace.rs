@@ -1022,6 +1022,41 @@ impl FollowableViewRegistry {
     }
 }
 
+/// Content rendered as the background of an empty pane when a project is open
+/// (i.e. the pane has no items but the workspace has visible worktrees).
+///
+/// This lets another crate (e.g. `git_ui`'s full-screen Git panel) own what the
+/// user sees when they first open a project, without `workspace` depending on
+/// that crate.
+pub struct EmptyPaneContent {
+    /// The view to render.
+    pub view: AnyView,
+    /// The focus handle of `view`, so the pane can route keyboard focus to it.
+    pub focus_handle: FocusHandle,
+}
+
+type EmptyPaneContentBuilder =
+    Arc<dyn Fn(WeakEntity<Workspace>, &mut Window, &mut App) -> Option<EmptyPaneContent>>;
+
+struct GlobalEmptyPaneContentBuilder(EmptyPaneContentBuilder);
+
+impl Global for GlobalEmptyPaneContentBuilder {}
+
+/// Registers the builder used to construct the content shown in an empty pane
+/// when a project is open. The most recently registered builder wins.
+pub fn set_empty_pane_content_builder(
+    builder: impl Fn(WeakEntity<Workspace>, &mut Window, &mut App) -> Option<EmptyPaneContent> + 'static,
+    cx: &mut App,
+) {
+    cx.set_global(GlobalEmptyPaneContentBuilder(Arc::new(builder)));
+}
+
+/// Returns the registered empty-pane content builder, if any.
+pub fn empty_pane_content_builder(cx: &App) -> Option<EmptyPaneContentBuilder> {
+    cx.try_global::<GlobalEmptyPaneContentBuilder>()
+        .map(|global| global.0.clone())
+}
+
 #[derive(Copy, Clone)]
 struct SerializableItemDescriptor {
     deserialize: fn(

@@ -115,6 +115,8 @@ actions!(
         Close,
         /// Toggles the git panel.
         Toggle,
+        /// Opens the Git panel full-screen in the active center pane.
+        OpenFullScreen,
         /// Opens the git panel menu.
         OpenMenu,
         /// Focuses on the commit message editor.
@@ -402,6 +404,88 @@ pub fn register(workspace: &mut Workspace) {
             });
         }
     });
+    workspace.register_action(|workspace, _: &OpenFullScreen, window, cx| {
+        GitPanelItem::deploy(workspace, window, cx);
+    });
+}
+
+/// Builds a full-screen Git panel to render as the background of an empty pane,
+/// or `None` when the project has no git repository (so a non-git project keeps
+/// a blank empty pane). This is a dedicated panel instance, independent of the
+/// dockable Git panel.
+pub fn build_empty_pane_content(
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<workspace::EmptyPaneContent> {
+    let workspace = workspace.upgrade()?;
+    workspace
+        .read(cx)
+        .project()
+        .read(cx)
+        .active_repository(cx)?;
+    let panel = workspace.update(cx, |workspace, cx| GitPanel::new_full_screen(workspace, window, cx));
+    let focus_handle = panel.focus_handle(cx);
+    Some(workspace::EmptyPaneContent {
+        view: panel.into(),
+        focus_handle,
+    })
+}
+
+/// A center-pane item that hosts a full-screen [`GitPanel`], so the built-in Git
+/// panel can be opened as a tab (e.g. via `space g g`) in addition to appearing
+/// in the dock and as the empty-pane background.
+pub struct GitPanelItem {
+    panel: Entity<GitPanel>,
+}
+
+impl GitPanelItem {
+    fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+        // On an empty pane the Git panel is already shown as the background
+        // dashboard, so just focus it rather than opening a redundant tab.
+        let active_pane = workspace.active_pane().clone();
+        if active_pane.read(cx).active_item().is_none() {
+            let focused =
+                active_pane.update(cx, |pane, cx| pane.focus_empty_pane_content(window, cx));
+            if focused {
+                return;
+            }
+        }
+        let existing = workspace.items_of_type::<Self>(cx).next();
+        if let Some(existing) = existing {
+            workspace.activate_item(&existing, true, true, window, cx);
+            return;
+        }
+        let panel = GitPanel::new_full_screen(workspace, window, cx);
+        let item = cx.new(|_cx| GitPanelItem { panel });
+        workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx);
+    }
+}
+
+impl Focusable for GitPanelItem {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.panel.focus_handle(cx)
+    }
+}
+
+impl EventEmitter<()> for GitPanelItem {}
+
+impl Render for GitPanelItem {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.panel.clone())
+    }
+}
+
+impl Item for GitPanelItem {
+    type Event = ();
+
+    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+        "Git".into()
+    }
+
+    fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
+        Some(Icon::new(IconName::GitBranch).color(Color::Muted))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1022,6 +1106,17 @@ impl GitPanel {
     // the same cfg as `new_test` so the non-test lib build doesn't see it as dead.
     #[cfg(any(test, feature = "test-support"))]
     fn new(
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<Self> {
+        Self::new_with_serialized_panel(workspace, None, window, cx)
+    }
+
+    /// Constructs a standalone Git panel instance for rendering full-screen as
+    /// the background of an empty pane (see [`build_empty_pane_content`]),
+    /// independent of the dockable Git panel.
+    pub(crate) fn new_full_screen(
         workspace: &mut Workspace,
         window: &mut Window,
         cx: &mut Context<Workspace>,
