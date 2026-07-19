@@ -12,8 +12,9 @@ use git::{
     repository::RepoPath, status::StageStatus,
 };
 use gpui::{
-    Action, AnyElement, App, AppContext as _, Context, Empty, Entity, EventEmitter, FocusHandle,
-    Focusable, HighlightStyle, IntoElement, Render, Subscription, Task, WeakEntity, Window,
+    Action, AnyElement, App, AppContext as _, Context, DismissEvent, Empty, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, HighlightStyle, IntoElement, Render, SharedString,
+    Subscription, Task, WeakEntity, Window,
 };
 use language::{Anchor, Buffer, HighlightedText, OffsetRangeExt as _, Point};
 use multi_buffer::{MultiBuffer, PathKey, excerpt_context_lines};
@@ -114,6 +115,69 @@ impl SoloDiffView {
 
                 workspace.add_item_to_active_pane(Box::new(view.clone()), None, true, window, cx);
                 view
+            })
+        })
+    }
+
+    /// Opens the diff for a single file as a dismissible modal dialog (rather
+    /// than a center-pane tab). Closing the modal (e.g. with Escape) returns
+    /// focus to whatever was focused before, such as the Git panel.
+    pub fn open_modal(
+        entry: GitStatusEntry,
+        repository: Entity<Repository>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let Some(workspace_entity) = workspace.upgrade() else {
+            return Task::ready(Err(anyhow::anyhow!("workspace was dropped")));
+        };
+
+        let Some(project_path) = repository
+            .read(cx)
+            .repo_path_to_project_path(&entry.repo_path, cx)
+        else {
+            return Task::ready(Err(anyhow::anyhow!(
+                "could not resolve repository path {:?}",
+                entry.repo_path
+            )));
+        };
+
+        let project = workspace_entity.read(cx).project().clone();
+        let repo_path = entry.repo_path;
+        // Captured before the modal takes focus so it can be restored on close
+        // (the modal layer skips its own focus restoration in `render_bare` mode).
+        let focus_to_restore = window.focused(cx);
+        window.spawn(cx, async move |cx| {
+            let buffer = project
+                .update(cx, |project, cx| {
+                    project.open_buffer(project_path.clone(), cx)
+                })
+                .await?;
+            let diff = project
+                .update(cx, |project, cx| {
+                    project.open_uncommitted_diff(buffer.clone(), cx)
+                })
+                .await?;
+
+            workspace_entity.update_in(cx, |workspace, window, cx| {
+                let workspace_handle = cx.entity();
+                let title: SharedString = repo_path.as_unix_str().to_string().into();
+                let diff_view = cx.new(|cx| {
+                    Self::new(
+                        project,
+                        repository,
+                        repo_path,
+                        buffer,
+                        diff,
+                        workspace_handle,
+                        window,
+                        cx,
+                    )
+                });
+                workspace.toggle_modal(window, cx, |_window, cx| {
+                    DiffPreviewModal::new(diff_view, title, focus_to_restore, cx)
+                });
             })
         })
     }
@@ -848,5 +912,99 @@ impl Render for SoloDiffGitToolbar {
                     })),
             )
             .into_any_element()
+    }
+}
+
+/// A dismissible modal dialog that hosts a [`SoloDiffView`] for a single file.
+/// Escape (via `menu::Cancel`) closes it and returns focus to the previously
+/// focused view, e.g. the full-screen Git panel.
+pub struct DiffPreviewModal {
+    diff_view: Entity<SoloDiffView>,
+    title: SharedString,
+    focus_handle: FocusHandle,
+    focus_to_restore: Option<FocusHandle>,
+}
+
+impl DiffPreviewModal {
+    fn new(
+        diff_view: Entity<SoloDiffView>,
+        title: SharedString,
+        focus_to_restore: Option<FocusHandle>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            diff_view,
+            title,
+            focus_handle: cx.focus_handle(),
+            focus_to_restore,
+        }
+    }
+
+    fn dismiss(&mut self, _: &menu::Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        // Return focus to whatever was focused before the preview opened (e.g.
+        // the previewed file's entry in the Git panel) before closing.
+        if let Some(focus_handle) = self.focus_to_restore.take() {
+            window.focus(&focus_handle, cx);
+        }
+        cx.emit(DismissEvent);
+    }
+}
+
+impl Focusable for DiffPreviewModal {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<DismissEvent> for DiffPreviewModal {}
+
+impl workspace::ModalView for DiffPreviewModal {
+    // Render without the modal layer's centered container so the dialog can fill
+    // almost the entire window (see `render`).
+    fn render_bare(&self) -> bool {
+        true
+    }
+}
+
+impl Render for DiffPreviewModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let border_color = cx.theme().colors().border;
+        div()
+            .occlude()
+            .absolute()
+            .top(px(6.))
+            .left(px(6.))
+            .right(px(6.))
+            .bottom(px(6.))
+            .key_context("GitDiffPreview")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::dismiss))
+            .rounded_lg()
+            .overflow_hidden()
+            .elevation_3(cx)
+            .shadow_lg()
+            .child(
+                v_flex()
+                    .size_full()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .w_full()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(border_color)
+                            .child(
+                                Label::new(self.title.clone()).weight(FontWeight::MEDIUM),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(self.diff_view.clone()),
+                    ),
+            )
     }
 }

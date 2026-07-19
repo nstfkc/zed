@@ -121,6 +121,8 @@ actions!(
         OpenMenu,
         /// Focuses on the commit message editor.
         FocusEditor,
+        /// Hides the full-screen commit message editor without committing.
+        HideCommitEditor,
         /// Focuses on the changes list.
         FocusChanges,
         /// Select next git panel menu item, and show it in the diff view
@@ -1020,6 +1022,12 @@ pub struct GitPanel {
     pub(crate) workspace: WeakEntity<Workspace>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     modal_open: bool,
+    /// Whether this panel is rendered full-screen as an empty-pane background /
+    /// center item. In this mode the inline commit editor is hidden until
+    /// revealed with `git_panel::FocusEditor` (magit-style `c c`).
+    full_screen: bool,
+    /// Whether the commit editor is currently revealed in full-screen mode.
+    commit_editor_revealed: bool,
     show_placeholders: bool,
     // Only read to compute collaborative co-authors, which requires the `call` feature.
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
@@ -1121,7 +1129,9 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Entity<Self> {
-        Self::new_with_serialized_panel(workspace, None, window, cx)
+        let panel = Self::new_with_serialized_panel(workspace, None, window, cx);
+        panel.update(cx, |panel, _cx| panel.full_screen = true);
+        panel
     }
 
     fn new_with_serialized_panel(
@@ -1338,6 +1348,8 @@ impl GitPanel {
                 context_menu: None,
                 workspace: workspace.weak_handle(),
                 modal_open: false,
+                full_screen: false,
+                commit_editor_revealed: false,
                 entry_count: 0,
                 bulk_staging: None,
                 stash_entries: Default::default(),
@@ -1569,6 +1581,9 @@ impl GitPanel {
     fn dispatch_context(&self, window: &mut Window, cx: &Context<Self>) -> KeyContext {
         let mut dispatch_context = KeyContext::new_with_defaults();
         dispatch_context.add("GitPanel");
+        if self.full_screen {
+            dispatch_context.add("GitPanelFullScreen");
+        }
 
         if self.commit_editor.read(cx).is_focused(window) {
             dispatch_context.add("CommitEditor");
@@ -1917,9 +1932,28 @@ impl GitPanel {
     }
 
     fn focus_editor(&mut self, _: &FocusEditor, window: &mut Window, cx: &mut Context<Self>) {
+        if self.full_screen {
+            self.commit_editor_revealed = true;
+        }
         self.commit_editor.update(cx, |editor, cx| {
             window.focus(&editor.focus_handle(cx), cx);
         });
+        cx.notify();
+    }
+
+    /// Hides the full-screen commit editor without committing and returns focus
+    /// to the changes list. In dock mode this is a no-op.
+    fn hide_commit_editor(
+        &mut self,
+        _: &HideCommitEditor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.full_screen {
+            return;
+        }
+        self.commit_editor_revealed = false;
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -2031,8 +2065,13 @@ impl GitPanel {
                 .clone();
             let repository = self.active_repository.clone()?;
 
-            SoloDiffView::open_or_focus(entry, repository, self.workspace.clone(), window, cx)
-                .detach_and_notify_err(self.workspace.clone(), window, cx);
+            if self.full_screen {
+                SoloDiffView::open_modal(entry, repository, self.workspace.clone(), window, cx)
+                    .detach_and_notify_err(self.workspace.clone(), window, cx);
+            } else {
+                SoloDiffView::open_or_focus(entry, repository, self.workspace.clone(), window, cx)
+                    .detach_and_notify_err(self.workspace.clone(), window, cx);
+            }
 
             Some(())
         });
@@ -2854,6 +2893,11 @@ impl GitPanel {
                 telemetry::event!("Git Amended", source = "Git Panel");
             } else {
                 telemetry::event!("Git Committed", source = "Git Panel");
+            }
+            if self.full_screen {
+                self.commit_editor_revealed = false;
+                self.focus_handle.focus(window, cx);
+                cx.notify();
             }
         }
     }
@@ -8051,6 +8095,7 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::view_staged_changes))
             .on_action(cx.listener(Self::focus_changes_list))
             .on_action(cx.listener(Self::focus_editor))
+            .on_action(cx.listener(Self::hide_commit_editor))
             .on_action(cx.listener(Self::expand_commit_editor))
             .when(has_write_access && has_co_authors, |git_panel| {
                 git_panel.on_action(cx.listener(Self::toggle_fill_co_authors))
@@ -8094,7 +8139,9 @@ impl Render for GitPanel {
                                     }
                                 })
                             })
-                            .children(self.render_footer(window, cx))
+                            .when(!self.full_screen || self.commit_editor_revealed, |this| {
+                                this.children(self.render_footer(window, cx))
+                            })
                             .when(self.amend_pending, |this| {
                                 this.child(self.render_pending_amend(cx))
                             })
@@ -8119,7 +8166,15 @@ impl Render for GitPanel {
 
 impl Focusable for GitPanel {
     fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
-        if self.entries.is_empty() || self.commit_editor_expanded {
+        if self.full_screen {
+            // In full-screen mode the commit editor is hidden until revealed, so
+            // default focus to the changes list even when there are no entries.
+            if self.commit_editor_revealed {
+                self.commit_editor.focus_handle(cx)
+            } else {
+                self.focus_handle.clone()
+            }
+        } else if self.entries.is_empty() || self.commit_editor_expanded {
             self.commit_editor.focus_handle(cx)
         } else {
             self.focus_handle.clone()

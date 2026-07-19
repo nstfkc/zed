@@ -1105,6 +1105,34 @@
     },
   },
   {
+    // Full-screen Git panel (empty-pane background / center tab): magit-style
+    // single-key bindings that don't affect the dockable Git panel.
+    "context": "GitPanel && GitPanelFullScreen && ChangesList && !GitBranchSelector",
+    "use_key_equivalents": true,
+    "bindings": {
+      "s": "git::StageFile",
+      "u": "git::UnstageFile",
+      "c c": "git_panel::FocusEditor",
+      "tab": "menu::SecondaryConfirm",
+      "enter": "git::ViewFile",
+    },
+  },
+  {
+    "context": "GitPanel && GitPanelFullScreen && CommitEditor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-c cmd-c": "git::Commit",
+      "cmd-c cmd-k": "git_panel::HideCommitEditor",
+    },
+  },
+  {
+    "context": "GitDiffPreview",
+    "use_key_equivalents": true,
+    "bindings": {
+      "escape": "menu::Cancel",
+    },
+  },
+  {
     "context": "GitDiff > Editor",
     "use_key_equivalents": true,
     "bindings": {
