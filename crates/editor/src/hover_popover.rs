@@ -744,6 +744,55 @@ pub fn hover_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
     }
 }
 
+/// Requests the LSP hover at `anchor` through the same provider path the hover
+/// popover uses and builds the identical Markdown entity from the returned
+/// blocks, so callers that render outside the popover (e.g. the vim `ShowHover`
+/// action, which renders into the minibuffer) show the same content. Resolves to
+/// `None` when there is no hover provider or the language server returns no
+/// non-empty content.
+pub fn hover_markdown_at(
+    editor: &mut Editor,
+    anchor: Anchor,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) -> Task<Option<Entity<Markdown>>> {
+    let buffer_snapshot = editor.buffer.read(cx).snapshot(cx);
+    let Some((buffer_position, _)) = buffer_snapshot.anchor_to_buffer_anchor(anchor) else {
+        return Task::ready(None);
+    };
+    let Some(buffer) = editor.buffer.read(cx).buffer(buffer_position.buffer_id) else {
+        return Task::ready(None);
+    };
+    let language_registry = editor
+        .project()
+        .map(|project| project.read(cx).languages().clone());
+    let Some(provider) = editor.semantics_provider.clone() else {
+        return Task::ready(None);
+    };
+
+    cx.spawn_in(window, async move |_editor, cx| {
+        let hover_request = cx
+            .update(|_, cx| provider.hover(&buffer, buffer_position, cx))
+            .ok()
+            .flatten()?;
+        let hovers_response = hover_request.await.unwrap_or_default();
+
+        let mut blocks = Vec::new();
+        let mut language = None;
+        for hover_result in hovers_response {
+            if language.is_none() {
+                language = hover_result.language;
+            }
+            blocks.extend(hover_result.contents);
+        }
+        if blocks.iter().all(|block| block.text.trim().is_empty()) {
+            return None;
+        }
+
+        parse_blocks(&blocks, language_registry.as_ref(), language, cx)
+    })
+}
+
 pub fn diagnostics_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
     let settings = ThemeSettings::get_global(cx);
     let ui_font_family = settings.ui_font.family.clone();
