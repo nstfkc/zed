@@ -1281,6 +1281,22 @@
     },
   },
   {
+    "context": "ExecCommand > Editor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "escape": "menu::Cancel",
+      "enter": "menu::Confirm"
+    }
+  },
+  {
+    "context": "ExecCommandOutput",
+    "use_key_equivalents": true,
+    "bindings": {
+      "escape": "menu::Cancel",
+      "d": "exec_command::Detach"
+    }
+  },
+  {
     "context": "Picker > Editor",
     "use_key_equivalents": true,
     "bindings": {
