@@ -113,6 +113,22 @@ pub fn show_with_options<V: ManagedView>(
     window.focus(&focus_handle, cx);
 }
 
+/// The view currently shown in the minibuffer, if it is of type `V`. Lets a
+/// feature that opens the minibuffer notice that its own content is already up,
+/// e.g. to close it again instead of replacing it.
+pub fn shown_content<V: Render>(workspace: &Workspace, cx: &App) -> Option<Entity<V>> {
+    workspace
+        .bottom_panel()?
+        .clone()
+        .downcast::<MinibufferHost>()
+        .ok()?
+        .read(cx)
+        .content
+        .clone()
+        .downcast::<V>()
+        .ok()
+}
+
 /// Switches the currently shown minibuffer content between the single-line strip
 /// and the fixed-height panel, for content that changes shape while it is open
 /// (e.g. a command prompt that grows into an output view). Does nothing when the

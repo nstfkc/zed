@@ -6,9 +6,13 @@
 //! Escape stops the command and closes the minibuffer; `d` leaves it running in
 //! the background.
 //!
-//! Every run is kept in a session-wide history (see [`CommandHistory`]), so its
-//! output can be reopened later with `exec_command::ToggleHistory`, whether the
-//! command is still running or has already exited.
+//! Runs are kept in [`CommandHistory`], so their output can be reopened later
+//! with `exec_command::ToggleHistory`, whether the command is still running or
+//! has already exited.
+//!
+//! Output is shown as plain text: neither ANSI escape sequences nor in-line
+//! carriage returns (progress bars that redraw a line with `\r`) are
+//! interpreted, so both show up literally.
 
 use std::path::PathBuf;
 use std::process::ExitStatus;
@@ -28,16 +32,22 @@ use picker::{Picker, PickerDelegate};
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use util::ResultExt as _;
 use util::command::Stdio;
+use util::shell::ShellKind;
 use workspace::Workspace;
 
 /// How much output a single run keeps. Older lines are dropped so a chatty
 /// command (`yes`, a tailed log) can't grow without bound.
 const MAX_OUTPUT_LINES: usize = 10_000;
 
+/// How many runs the history keeps. Finished runs past this are dropped, oldest
+/// first, so a long session doesn't hold on to every command it ever ran.
+const MAX_HISTORY_ENTRIES: usize = 100;
+
 actions!(
     exec_command,
     [
-        /// Prompts for a shell command to run in the minibuffer.
+        /// Prompts for a shell command to run in the minibuffer, or closes the
+        /// prompt if it is already open.
         Toggle,
         /// Lists previously run shell commands so their output can be reopened.
         ToggleHistory,
@@ -55,6 +65,14 @@ pub fn init(cx: &mut App) {
 }
 
 fn toggle(workspace: &mut Workspace, _: &Toggle, window: &mut Window, cx: &mut Context<Workspace>) {
+    // Closing by emitting the dismiss event (rather than clearing the panel)
+    // goes through the minibuffer's own teardown, which restores focus. A
+    // running command is left running, same as detaching from it.
+    if let Some(shown) = minibuffer::shown_content::<ExecCommand>(workspace, cx) {
+        shown.update(cx, |_, cx| cx.emit(DismissEvent));
+        return;
+    }
+
     let workspace_handle = cx.weak_entity();
     let view = cx.new(|cx| ExecCommand::prompt(workspace_handle, window, cx));
     minibuffer::show_with_options(workspace, view, true, window, cx);
@@ -71,14 +89,30 @@ fn toggle_history(
     minibuffer::show(workspace, view, window, cx);
 }
 
-/// Every command started in this window, most recent last. Runs stay here after
-/// the minibuffer closes so their output can be reopened.
+/// Commands started in this Zed instance, most recent last. Runs stay here after
+/// the minibuffer closes so their output can be reopened. The history is
+/// app-wide, so every window sees the same runs.
 #[derive(Default)]
 struct CommandHistory {
     runs: Vec<Entity<CommandRun>>,
 }
 
 impl Global for CommandHistory {}
+
+impl CommandHistory {
+    fn push(&mut self, run: Entity<CommandRun>, cx: &App) {
+        self.runs.push(run);
+        // Only finished runs are evicted: dropping a running one would kill it,
+        // which is the opposite of what detaching it asked for.
+        while self.runs.len() > MAX_HISTORY_ENTRIES {
+            let Some(oldest_finished) = self.runs.iter().position(|run| !run.read(cx).is_running())
+            else {
+                break;
+            };
+            self.runs.remove(oldest_finished);
+        }
+    }
+}
 
 #[derive(Clone, PartialEq)]
 enum RunStatus {
@@ -114,10 +148,50 @@ impl RunStatus {
     }
 }
 
+/// The output of a run, split into lines for rendering. The line currently
+/// being written is kept as an owned `String` so appending to it doesn't rebuild
+/// it: a command that writes a long line in many small chunks (an unbuffered
+/// progress report) would otherwise be quadratic in the line's length.
+#[derive(Default)]
+struct OutputLines {
+    complete: Vec<SharedString>,
+    partial: String,
+}
+
+impl OutputLines {
+    fn push(&mut self, chunk: &str) {
+        for (ix, piece) in chunk.split('\n').enumerate() {
+            if ix > 0 {
+                let line = std::mem::take(&mut self.partial);
+                self.complete.push(line.into());
+            }
+            self.partial.push_str(piece.trim_end_matches('\r'));
+        }
+        if self.complete.len() > MAX_OUTPUT_LINES {
+            self.complete
+                .drain(..self.complete.len() - MAX_OUTPUT_LINES);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.complete.len() + if self.partial.is_empty() { 0 } else { 1 }
+    }
+
+    fn line(&self, ix: usize) -> Option<SharedString> {
+        match self.complete.get(ix) {
+            Some(line) => Some(line.clone()),
+            None if ix == self.complete.len() && !self.partial.is_empty() => {
+                Some(self.partial.clone().into())
+            }
+            None => None,
+        }
+    }
+}
+
 /// A single shell command and the output it has produced so far.
 struct CommandRun {
     command: SharedString,
-    lines: Vec<SharedString>,
+    output: OutputLines,
     status: RunStatus,
     /// The child process is spawned with `kill_on_drop`, so dropping this task
     /// stops it. Detaching a run means simply leaving the task in place.
@@ -136,7 +210,7 @@ impl CommandRun {
 
                 while let Some(chunk) = chunk_rx.next().await {
                     this.update(cx, |run, cx| {
-                        run.push_output(&chunk);
+                        run.output.push(&chunk);
                         cx.notify();
                     })
                     .ok();
@@ -158,7 +232,7 @@ impl CommandRun {
 
         Self {
             command: command.into(),
-            lines: Vec::new(),
+            output: OutputLines::default(),
             status: RunStatus::Running,
             task: Some(task),
         }
@@ -177,29 +251,6 @@ impl CommandRun {
         self.status = RunStatus::Stopped;
         cx.notify();
     }
-
-    fn push_output(&mut self, chunk: &str) {
-        if self.lines.is_empty() {
-            self.lines.push(SharedString::default());
-        }
-        for (ix, piece) in chunk.split('\n').enumerate() {
-            if ix > 0 {
-                self.lines.push(SharedString::default());
-            }
-            let piece = piece.trim_end_matches('\r');
-            if piece.is_empty() {
-                continue;
-            }
-            if let Some(last) = self.lines.last_mut() {
-                let mut line = last.to_string();
-                line.push_str(piece);
-                *last = line.into();
-            }
-        }
-        if self.lines.len() > MAX_OUTPUT_LINES {
-            self.lines.drain(..self.lines.len() - MAX_OUTPUT_LINES);
-        }
-    }
 }
 
 async fn run_command(
@@ -208,10 +259,12 @@ async fn run_command(
     chunk_tx: UnboundedSender<String>,
 ) -> Result<ExitStatus> {
     let shell = util::shell::get_system_shell();
+    // Which flag introduces a command line depends on the shell: `-c` for POSIX
+    // shells, `-C` for PowerShell (the Windows default), `/S /C` for cmd.
+    let arguments = ShellKind::new(&shell, cfg!(windows)).args_for_shell(false, command.clone());
     let mut process = util::command::new_command(&shell);
     process
-        .arg("-c")
-        .arg(&command)
+        .args(&arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -222,7 +275,7 @@ async fn run_command(
 
     let mut child = process
         .spawn()
-        .with_context(|| format!("spawning `{shell} -c {command}`"))?;
+        .with_context(|| format!("spawning `{command}` with {shell}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     futures::future::join(
@@ -339,7 +392,7 @@ impl ExecCommand {
         let scroll_handle = UniformListScrollHandle::new();
         let observation = cx.observe(&run, |this, run, cx| {
             if let Mode::Output { scroll_handle, .. } = &this.mode {
-                let line_count = run.read(cx).lines.len();
+                let line_count = run.read(cx).output.len();
                 if line_count > 0 {
                     scroll_handle.scroll_to_item(line_count - 1, ScrollStrategy::Top);
                 }
@@ -377,7 +430,9 @@ impl ExecCommand {
             .ok()
             .flatten();
         let run = cx.new(|cx| CommandRun::spawn(command, working_directory, cx));
-        cx.default_global::<CommandHistory>().runs.push(run.clone());
+        cx.update_default_global::<CommandHistory, _>(|history, cx| {
+            history.push(run.clone(), cx);
+        });
         self.show_output(run, window, cx);
     }
 
@@ -402,7 +457,7 @@ impl ExecCommand {
     ) -> impl IntoElement {
         let weak_run = run.downgrade();
         let run = run.read(cx);
-        let line_count = run.lines.len();
+        let line_count = run.output.len();
         let status = run.status.clone();
         let is_running = run.is_running();
 
@@ -440,21 +495,16 @@ impl ExecCommand {
                             let Some(run) = weak_run.upgrade() else {
                                 return Vec::new();
                             };
-                            run.read(cx)
-                                .lines
-                                .get(range)
-                                .map(|lines| {
-                                    lines
-                                        .iter()
-                                        .map(|line| {
-                                            Label::new(line.clone())
-                                                .buffer_font(cx)
-                                                .size(LabelSize::Small)
-                                                .single_line()
-                                        })
-                                        .collect()
+                            let run = run.read(cx);
+                            range
+                                .filter_map(|ix| run.output.line(ix))
+                                .map(|line| {
+                                    Label::new(line)
+                                        .buffer_font(cx)
+                                        .size(LabelSize::Small)
+                                        .single_line()
                                 })
-                                .unwrap_or_default()
+                                .collect()
                         },
                     )
                     .track_scroll(scroll_handle)
@@ -647,5 +697,76 @@ impl PickerDelegate for CommandHistoryDelegate {
                         .color(status.color()),
                 ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(output: &OutputLines) -> Vec<String> {
+        (0..output.len())
+            .filter_map(|ix| output.line(ix))
+            .map(|line| line.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_output_lines_splits_on_newlines() {
+        let mut output = OutputLines::default();
+        output.push("first\nsecond\n");
+        assert_eq!(lines(&output), vec!["first", "second"]);
+
+        output.push("third");
+        assert_eq!(lines(&output), vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn test_output_lines_joins_partial_chunks() {
+        let mut output = OutputLines::default();
+        output.push("par");
+        output.push("tial");
+        assert_eq!(lines(&output), vec!["partial"]);
+
+        output.push(" line\nnext");
+        assert_eq!(lines(&output), vec!["partial line", "next"]);
+    }
+
+    #[test]
+    fn test_output_lines_keeps_blank_lines_and_strips_carriage_returns() {
+        let mut output = OutputLines::default();
+        output.push("one\r\n\r\ntwo\r\n");
+        assert_eq!(lines(&output), vec!["one", "", "two"]);
+    }
+
+    #[test]
+    fn test_output_lines_keeps_embedded_carriage_returns_literal() {
+        // Documents current behavior: a mid-line carriage return (progress bars)
+        // is kept literally rather than overwriting the line.
+        let mut output = OutputLines::default();
+        output.push("50%\r100%\n");
+        assert_eq!(lines(&output), vec!["50%\r100%"]);
+    }
+
+    #[test]
+    fn test_output_lines_is_empty_before_any_output() {
+        let output = OutputLines::default();
+        assert_eq!(output.len(), 0);
+        assert_eq!(output.line(0), None);
+    }
+
+    #[test]
+    fn test_output_lines_drops_oldest_lines_past_the_cap() {
+        let mut output = OutputLines::default();
+        for line in 0..MAX_OUTPUT_LINES + 10 {
+            output.push(&format!("line {line}\n"));
+        }
+        let lines = lines(&output);
+        assert_eq!(lines.len(), MAX_OUTPUT_LINES);
+        assert_eq!(lines.first().map(String::as_str), Some("line 10"));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some(format!("line {}", MAX_OUTPUT_LINES + 9).as_str())
+        );
     }
 }
