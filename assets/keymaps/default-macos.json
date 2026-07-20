@@ -1117,7 +1117,6 @@
       "escape": "git_panel::CancelVisualSelection",
       "c c": "git_panel::FocusEditor",
       "b b": "git_panel::SelectBranch",
-      "b c": "git_panel::CreateBranch",
       "shift-f": "git_panel::PullPopup",
       "shift-p": "git_panel::PushPopup",
       "shift-z": "git_panel::StashPopup",

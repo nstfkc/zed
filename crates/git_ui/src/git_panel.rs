@@ -125,8 +125,6 @@ actions!(
         HideCommitEditor,
         /// Lists branches in the minibuffer to check one out.
         SelectBranch,
-        /// Creates a new branch: pick a base in the minibuffer, then enter a name.
-        CreateBranch,
         /// Opens the magit-style pull transient in the minibuffer.
         PullPopup,
         /// Opens the magit-style push transient in the minibuffer.
@@ -1977,14 +1975,6 @@ impl GitPanel {
         self.workspace
             .update(cx, |workspace, cx| {
                 branch_picker::open_in_minibuffer(workspace, window, cx);
-            })
-            .log_err();
-    }
-
-    fn create_branch(&mut self, _: &CreateBranch, window: &mut Window, cx: &mut Context<Self>) {
-        self.workspace
-            .update(cx, |workspace, cx| {
-                branch_picker::create_in_minibuffer(workspace, window, cx);
             })
             .log_err();
     }
@@ -8656,7 +8646,6 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::hide_commit_editor))
             .on_action(cx.listener(Self::select_branch))
-            .on_action(cx.listener(Self::create_branch))
             .on_action(cx.listener(Self::pull_popup))
             .on_action(cx.listener(Self::push_popup))
             .on_action(cx.listener(Self::stash_popup))
