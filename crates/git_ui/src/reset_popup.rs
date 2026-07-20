@@ -79,7 +79,7 @@ impl ResetPopup {
         self.choose_mode(ResetMode::Hard, window, cx);
     }
 
-    fn confirm(&mut self, _: &menu::Confirm, _: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
         let Some(mode) = self.mode.take() else {
             return;
         };
@@ -91,7 +91,7 @@ impl ResetPopup {
             revision.to_string()
         };
         self.panel
-            .update(cx, |panel, cx| panel.reset_to(revision, mode, cx))
+            .update(cx, |panel, cx| panel.reset_to(revision, mode, window, cx))
             .ok();
         cx.emit(DismissEvent);
     }

@@ -2858,6 +2858,7 @@ impl GitStore {
             });
 
         let args = PushArgs {
+            set_upstream: envelope.payload.set_upstream,
             force: envelope.payload.force,
             no_verify: envelope.payload.no_verify,
             dry_run: envelope.payload.dry_run,
@@ -7731,6 +7732,7 @@ impl Repository {
                                     }
                                 }
                                     as i32),
+                                set_upstream: args.set_upstream,
                                 force: args.force,
                                 no_verify: args.no_verify,
                                 dry_run: args.dry_run,

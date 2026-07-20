@@ -67,7 +67,6 @@ pub struct PushPopup {
     panel: WeakEntity<GitPanel>,
     args: PushArgs,
     force_with_lease: bool,
-    set_upstream: bool,
     from_branch: SharedString,
     upstream: SharedString,
     focus_handle: FocusHandle,
@@ -84,7 +83,6 @@ impl PushPopup {
             panel,
             args: PushArgs::default(),
             force_with_lease: false,
-            set_upstream: false,
             from_branch,
             upstream,
             focus_handle: cx.focus_handle(),
@@ -122,24 +120,16 @@ impl PushPopup {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_upstream = !self.set_upstream;
+        self.args.set_upstream = !self.args.set_upstream;
         cx.notify();
     }
 
     fn run_push(&mut self, select_remote: bool, window: &mut Window, cx: &mut Context<Self>) {
         let args = self.args;
         let force_with_lease = self.force_with_lease;
-        let set_upstream = self.set_upstream;
         self.panel
             .update(cx, |panel, cx| {
-                panel.push_with_args(
-                    args,
-                    force_with_lease,
-                    set_upstream,
-                    select_remote,
-                    window,
-                    cx,
-                )
+                panel.push_with_args(args, force_with_lease, select_remote, window, cx)
             })
             .ok();
         cx.emit(DismissEvent);
@@ -211,7 +201,7 @@ impl Render for PushPopup {
                 "-u",
                 "Set upstream",
                 "(--set-upstream)",
-                self.set_upstream,
+                self.args.set_upstream,
             ))
             .child(div().h_2())
             .child(

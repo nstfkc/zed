@@ -3055,12 +3055,41 @@ impl GitPanel {
         .detach();
     }
 
-    pub(crate) fn reset_to(&mut self, revision: String, mode: ResetMode, cx: &mut Context<Self>) {
+    pub(crate) fn reset_to(
+        &mut self,
+        revision: String,
+        mode: ResetMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(active_repository) = self.active_repository.clone() else {
             return;
         };
 
+        // A hard reset throws away staged and unstaged work with no way to get it
+        // back, so it is confirmed like discarding changes to a file. Soft and
+        // mixed resets leave the working tree alone and run straight away.
+        let confirmation = match mode {
+            ResetMode::Hard => {
+                let prompt = window.prompt(
+                    PromptLevel::Warning,
+                    &format!(
+                        "Are you sure you want to reset --hard to {}?",
+                        MarkdownInlineCode(&revision)
+                    ),
+                    Some("All staged and unstaged changes in the working tree will be discarded."),
+                    &["Discard Changes", "Cancel"],
+                    cx,
+                );
+                cx.background_spawn(prompt)
+            }
+            ResetMode::Soft | ResetMode::Mixed => Task::ready(Ok(0)),
+        };
+
         cx.spawn(async move |this, cx| {
+            if confirmation.await? != 0 {
+                return anyhow::Ok(());
+            }
             let reset_task = active_repository
                 .update(cx, |repo, cx| repo.reset(revision, mode, cx))
                 .await?;
@@ -3071,9 +3100,10 @@ impl GitPanel {
                     })
                     .ok();
                 cx.notify();
-            })
+            })?;
+            Ok(())
         })
-        .detach();
+        .detach_and_log_err(cx);
     }
 
     pub(crate) fn rebase(
@@ -4172,21 +4202,13 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.push_with_args(
-            PushArgs::default(),
-            force_push,
-            false,
-            select_remote,
-            window,
-            cx,
-        );
+        self.push_with_args(PushArgs::default(), force_push, select_remote, window, cx);
     }
 
     pub(crate) fn push_with_args(
         &mut self,
         args: PushArgs,
         force_with_lease: bool,
-        set_upstream: bool,
         select_remote: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -4206,12 +4228,10 @@ impl GitPanel {
 
         telemetry::event!("Git Pushed");
 
-        // `git push` accepts only one of `--set-upstream` and
-        // `--force-with-lease` here, so an explicit `--set-upstream` wins; a
-        // hard `--force` is still available through `args`.
-        let options = if set_upstream {
-            Some(PushOptions::SetUpstream)
-        } else if force_with_lease {
+        // An explicit `--set-upstream` travels in `args` so it can be combined
+        // with a force mode; `options` only picks the force mode, falling back to
+        // setting the upstream when the branch doesn't track one yet.
+        let options = if force_with_lease {
             Some(PushOptions::Force)
         } else {
             match branch.upstream {
@@ -12698,6 +12718,52 @@ mod tests {
 
             workspace.update_in(cx, |workspace, _, cx| workspace.clear_bottom_panel(cx));
         }
+    }
+
+    #[gpui::test]
+    async fn test_hard_reset_asks_for_confirmation(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "tracked": "tracked\n",
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let panel = workspace.update_in(cx, GitPanel::new);
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.reset_to("HEAD".to_string(), ResetMode::Mixed, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            !cx.has_pending_prompt(),
+            "a mixed reset leaves the working tree alone and shouldn't prompt"
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.reset_to("HEAD".to_string(), ResetMode::Hard, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.has_pending_prompt(),
+            "a hard reset discards changes and should ask first"
+        );
+
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
     }
 
     #[gpui::test]

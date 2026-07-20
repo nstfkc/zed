@@ -1253,8 +1253,12 @@ pub enum PushOptions {
 }
 
 /// Extra flags forwarded to `git push`, mirroring the magit-style push transient.
+/// `set_upstream` lives here rather than in [`PushOptions`] so that it can be
+/// combined with a force mode, which `git push` accepts but `PushOptions` cannot
+/// express.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PushArgs {
+    pub set_upstream: bool,
     pub force: bool,
     pub no_verify: bool,
     pub dry_run: bool,
@@ -1692,7 +1696,11 @@ impl GitRepository for RealGitRepository {
                         command_args.push("--autostash".to_string());
                     }
                     if args.autosquash {
+                        // Older git only honours `--autosquash` together with
+                        // `--interactive`, so pair them and accept the generated
+                        // todo list unedited (see `GIT_SEQUENCE_EDITOR` below).
                         command_args.push("--autosquash".to_string());
+                        command_args.push("--interactive".to_string());
                     }
                     command_args.push(reference.clone());
                 }
@@ -1703,6 +1711,12 @@ impl GitRepository for RealGitRepository {
 
             let mut command = git.build_command(&command_args);
             command.envs(env.iter());
+            // Neither the todo list nor a commit message may open an editor: there
+            // is nobody to close it, so the command would hang forever.
+            if args.autosquash {
+                command.env("GIT_SEQUENCE_EDITOR", "true");
+                command.env("GIT_EDITOR", "true");
+            }
             if matches!(action, RebaseAction::Continue) {
                 // `git rebase --continue` opens an editor to confirm the commit message
                 // unless one is configured that exits immediately.
@@ -2749,6 +2763,9 @@ impl GitRepository for RealGitRepository {
                     PushOptions::SetUpstream => "--set-upstream",
                     PushOptions::Force => "--force-with-lease",
                 }));
+            if args.set_upstream && options != Some(PushOptions::SetUpstream) {
+                command.arg("--set-upstream");
+            }
             if args.force {
                 command.arg("--force");
             }

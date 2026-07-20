@@ -430,6 +430,7 @@ message Push {
   bool force = 9;
   bool no_verify = 10;
   bool dry_run = 11;
+  bool set_upstream = 12;
 
   enum PushOptions {
     SET_UPSTREAM = 0;
