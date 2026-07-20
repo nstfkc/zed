@@ -28,10 +28,29 @@ actions!(
         ResetSoft,
         /// Resets the branch pointer, index and working tree, discarding changes.
         ResetHard,
+        /// Resets the index only to a revision, keeping the working tree.
+        ResetIndex,
+        /// Resets the working tree only to a revision, keeping the index, discarding changes.
+        ResetWorktree,
+        /// Resets the selected file (index and working tree) to a revision, discarding changes.
+        ResetFile,
         /// Picks the reset target from the branch list instead of typing it.
         ResetFromBranch,
     ]
 );
+
+/// Which kind of reset the transient will run once a revision is entered.
+#[derive(Clone, Copy)]
+enum ResetKind {
+    /// A whole-tree `git reset` with the given mode.
+    Mode(ResetMode),
+    /// Restore the index only (`git restore --staged`).
+    Index,
+    /// Restore the working tree only (`git restore --worktree`).
+    Worktree,
+    /// Restore the selected file's index and working tree (`git restore --staged --worktree`).
+    File,
+}
 
 /// Opens the reset transient in the minibuffer for the given Git panel.
 pub fn open(
@@ -48,9 +67,9 @@ pub fn open(
 pub struct ResetPopup {
     panel: WeakEntity<GitPanel>,
     workspace: WeakEntity<Workspace>,
-    /// `None` while the mode is still being chosen, `Some` once the popup is
+    /// `None` while the kind is still being chosen, `Some` once the popup is
     /// waiting for the target revision.
-    mode: Option<ResetMode>,
+    kind: Option<ResetKind>,
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
 }
@@ -70,32 +89,44 @@ impl ResetPopup {
         Self {
             panel,
             workspace,
-            mode: None,
+            kind: None,
             editor,
             focus_handle: cx.focus_handle(),
         }
     }
 
-    fn choose_mode(&mut self, mode: ResetMode, window: &mut Window, cx: &mut Context<Self>) {
-        self.mode = Some(mode);
+    fn choose_kind(&mut self, kind: ResetKind, window: &mut Window, cx: &mut Context<Self>) {
+        self.kind = Some(kind);
         window.focus(&self.editor.focus_handle(cx), cx);
         cx.notify();
     }
 
     fn reset_mixed(&mut self, _: &ResetMixed, window: &mut Window, cx: &mut Context<Self>) {
-        self.choose_mode(ResetMode::Mixed, window, cx);
+        self.choose_kind(ResetKind::Mode(ResetMode::Mixed), window, cx);
     }
 
     fn reset_soft(&mut self, _: &ResetSoft, window: &mut Window, cx: &mut Context<Self>) {
-        self.choose_mode(ResetMode::Soft, window, cx);
+        self.choose_kind(ResetKind::Mode(ResetMode::Soft), window, cx);
     }
 
     fn reset_hard(&mut self, _: &ResetHard, window: &mut Window, cx: &mut Context<Self>) {
-        self.choose_mode(ResetMode::Hard, window, cx);
+        self.choose_kind(ResetKind::Mode(ResetMode::Hard), window, cx);
+    }
+
+    fn reset_index(&mut self, _: &ResetIndex, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_kind(ResetKind::Index, window, cx);
+    }
+
+    fn reset_worktree(&mut self, _: &ResetWorktree, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_kind(ResetKind::Worktree, window, cx);
+    }
+
+    fn reset_file(&mut self, _: &ResetFile, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_kind(ResetKind::File, window, cx);
     }
 
     fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mode) = self.mode.take() else {
+        let Some(kind) = self.kind.take() else {
             return;
         };
         let revision = self.editor.read(cx).text(cx);
@@ -106,13 +137,22 @@ impl ResetPopup {
             revision.to_string()
         };
         self.panel
-            .update(cx, |panel, cx| panel.reset_to(revision, mode, window, cx))
+            .update(cx, |panel, cx| match kind {
+                ResetKind::Mode(mode) => panel.reset_to(revision, mode, window, cx),
+                ResetKind::Index => {
+                    panel.restore_to(revision, true, false, Vec::new(), window, cx)
+                }
+                ResetKind::Worktree => {
+                    panel.restore_to(revision, false, true, Vec::new(), window, cx)
+                }
+                ResetKind::File => panel.restore_selected_file_to(revision, window, cx),
+            })
             .ok();
         cx.emit(DismissEvent);
     }
 
     /// Replaces the revision input with the branch list in select mode; the
-    /// branch the user picks becomes the reset target, run with the mode already
+    /// branch the user picks becomes the reset target, run with the kind already
     /// chosen. The hard-reset confirmation still happens inside `reset_to`.
     fn reset_from_branch(
         &mut self,
@@ -120,7 +160,7 @@ impl ResetPopup {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(mode) = self.mode.take() else {
+        let Some(kind) = self.kind.take() else {
             return;
         };
         let panel = self.panel.clone();
@@ -128,7 +168,16 @@ impl ResetPopup {
         let on_select: SelectBranchCallback = Arc::new(move |branch, window, cx| {
             let revision = branch.name().to_string();
             panel
-                .update(cx, |panel, cx| panel.reset_to(revision, mode, window, cx))
+                .update(cx, |panel, cx| match kind {
+                    ResetKind::Mode(mode) => panel.reset_to(revision, mode, window, cx),
+                    ResetKind::Index => {
+                        panel.restore_to(revision, true, false, Vec::new(), window, cx)
+                    }
+                    ResetKind::Worktree => {
+                        panel.restore_to(revision, false, true, Vec::new(), window, cx)
+                    }
+                    ResetKind::File => panel.restore_selected_file_to(revision, window, cx),
+                })
                 .ok();
         });
 
@@ -148,11 +197,14 @@ impl ResetPopup {
         cx.emit(DismissEvent);
     }
 
-    fn mode_label(mode: &ResetMode) -> &'static str {
-        match mode {
-            ResetMode::Soft => "soft",
-            ResetMode::Mixed => "mixed",
-            ResetMode::Hard => "hard",
+    fn kind_label(kind: &ResetKind) -> &'static str {
+        match kind {
+            ResetKind::Mode(ResetMode::Soft) => "soft",
+            ResetKind::Mode(ResetMode::Mixed) => "mixed",
+            ResetKind::Mode(ResetMode::Hard) => "hard",
+            ResetKind::Index => "index",
+            ResetKind::Worktree => "worktree",
+            ResetKind::File => "file",
         }
     }
 }
@@ -167,7 +219,7 @@ impl EventEmitter<DismissEvent> for ResetPopup {}
 
 impl Render for ResetPopup {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let key_context = if self.mode.is_some() {
+        let key_context = if self.kind.is_some() {
             "GitResetPopupInput"
         } else {
             "GitResetPopup"
@@ -179,20 +231,23 @@ impl Render for ResetPopup {
             .on_action(cx.listener(Self::reset_mixed))
             .on_action(cx.listener(Self::reset_soft))
             .on_action(cx.listener(Self::reset_hard))
+            .on_action(cx.listener(Self::reset_index))
+            .on_action(cx.listener(Self::reset_worktree))
+            .on_action(cx.listener(Self::reset_file))
             .on_action(cx.listener(Self::reset_from_branch))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
             .size_full()
             .p_3()
             .gap_1()
-            .map(|this| match self.mode.as_ref() {
-                Some(mode) => this
+            .map(|this| match self.kind.as_ref() {
+                Some(kind) => this
                     .child(
                         h_flex()
                             .items_center()
                             .gap_2()
                             .child(
-                                Label::new(format!("Reset {} to:", Self::mode_label(mode)))
+                                Label::new(format!("Reset {} to:", Self::kind_label(kind)))
                                     .color(Color::Muted),
                             )
                             .child(div().flex_1().child(self.editor.clone())),
@@ -200,9 +255,12 @@ impl Render for ResetPopup {
                     .child(render_action("cmd-b", "pick from branch list")),
                 None => this
                     .child(render_section("Reset"))
-                    .child(render_action("m", "mixed  (--mixed)"))
-                    .child(render_action("s", "soft   (--soft)"))
-                    .child(render_action("h", "hard   (--hard, discards changes)")),
+                    .child(render_action("m", "mixed     (--mixed)"))
+                    .child(render_action("s", "soft      (--soft)"))
+                    .child(render_action("h", "hard      (--hard, discards changes)"))
+                    .child(render_action("i", "index     (index only)"))
+                    .child(render_action("w", "worktree  (worktree only, discards changes)"))
+                    .child(render_action("f", "file      (selected file, discards changes)")),
             })
     }
 }

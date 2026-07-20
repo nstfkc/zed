@@ -784,6 +784,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_diff_checkpoints);
         client.add_entity_request_handler(Self::handle_load_commit_diff);
         client.add_entity_request_handler(Self::handle_checkout_files);
+        client.add_entity_request_handler(Self::handle_restore);
         client.add_entity_request_handler(Self::handle_open_commit_message_buffer);
         client.add_entity_request_handler(Self::handle_set_index_text);
         client.add_entity_request_handler(Self::handle_askpass);
@@ -3975,6 +3976,34 @@ impl GitStore {
         Ok(proto::Ack {})
     }
 
+    async fn handle_restore(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitRestore>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let paths = envelope
+            .payload
+            .paths
+            .iter()
+            .map(|s| RepoPath::from_proto(s))
+            .collect::<Result<Vec<_>>>()?;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, cx| {
+                repository_handle.restore(
+                    envelope.payload.source,
+                    envelope.payload.staged,
+                    envelope.payload.worktree,
+                    paths,
+                    cx,
+                )
+            })
+            .await??;
+        Ok(proto::Ack {})
+    }
+
     async fn handle_open_commit_message_buffer(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::OpenCommitMessageBuffer>,
@@ -6191,6 +6220,48 @@ impl Repository {
                                 ResetMode::Mixed => git_reset::ResetMode::Mixed.into(),
                                 ResetMode::Hard => git_reset::ResetMode::Hard.into(),
                             },
+                        })
+                        .await?;
+
+                    Ok(())
+                }
+            }
+        })
+    }
+
+    pub fn restore(
+        &mut self,
+        source: String,
+        staged: bool,
+        worktree: bool,
+        paths: Vec<RepoPath>,
+        _cx: &mut App,
+    ) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+
+        self.send_job("restore", None, move |git_repo, _| async move {
+            match git_repo {
+                RepositoryState::Local(LocalRepositoryState {
+                    backend,
+                    environment,
+                    ..
+                }) => {
+                    backend
+                        .restore(source, staged, worktree, paths, environment.clone())
+                        .await
+                }
+                RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                    client
+                        .request(proto::GitRestore {
+                            project_id: project_id.0,
+                            repository_id: id.to_proto(),
+                            source,
+                            staged,
+                            worktree,
+                            paths: paths
+                                .into_iter()
+                                .map(|path| path.as_unix_str().to_owned())
+                                .collect(),
                         })
                         .await?;
 

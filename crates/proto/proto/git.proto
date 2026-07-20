@@ -338,6 +338,15 @@ message GitCheckoutFiles {
   repeated string paths = 5;
 }
 
+message GitRestore {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  string source = 3;
+  bool staged = 4;
+  bool worktree = 5;
+  repeated string paths = 6;
+}
+
 // Move to `git.proto` once collab's min version is >=0.171.0.
 message StatusEntry {
   string repo_path = 1;

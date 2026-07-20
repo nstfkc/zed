@@ -1033,6 +1033,21 @@ pub trait GitRepository: Send + Sync {
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
 
+    /// Restores the index and/or working tree from `source` (a revision) for the
+    /// given paths, leaving the branch pointer untouched. This maps to
+    /// `git restore --source=<source> [--staged] [--worktree] -- <paths>`, which
+    /// covers index-only, worktree-only, and single-file reset variants depending
+    /// on which of `staged`/`worktree` are set. When `paths` is empty the whole
+    /// repository (".") is restored.
+    fn restore(
+        &self,
+        source: String,
+        staged: bool,
+        worktree: bool,
+        paths: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
     fn show(&self, commit: String) -> BoxFuture<'_, Result<CommitDetails>>;
 
     fn load_commit(&self, commit: String, cx: AsyncApp) -> BoxFuture<'_, Result<CommitDiff>>;
@@ -1781,6 +1796,47 @@ impl GitRepository for RealGitRepository {
             anyhow::ensure!(
                 output.status.success(),
                 "Failed to checkout files:\n{}",
+                String::from_utf8_lossy(&output.stderr),
+            );
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn restore(
+        &self,
+        source: String,
+        staged: bool,
+        worktree: bool,
+        paths: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        async move {
+            let git = git?;
+            if !staged && !worktree {
+                return Ok(());
+            }
+
+            let mut args = vec!["restore".to_string(), format!("--source={}", source)];
+            if staged {
+                args.push("--staged".to_string());
+            }
+            if worktree {
+                args.push("--worktree".to_string());
+            }
+            args.push("--".to_string());
+            if paths.is_empty() {
+                // `git restore` requires a pathspec; "." selects the whole worktree.
+                args.push(".".to_string());
+            } else {
+                args.extend(paths.iter().map(|path| path.as_unix_str().to_owned()));
+            }
+
+            let output = git.build_command(&args).envs(env.iter()).output().await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "Failed to restore:\n{}",
                 String::from_utf8_lossy(&output.stderr),
             );
             Ok(())

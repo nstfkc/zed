@@ -356,6 +356,17 @@ impl GitRepository for FakeGitRepository {
         unimplemented!()
     }
 
+    fn restore(
+        &self,
+        _source: String,
+        _staged: bool,
+        _worktree: bool,
+        _paths: Vec<RepoPath>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        unimplemented!()
+    }
+
     fn path(&self) -> PathBuf {
         self.repository_dir_path.clone()
     }
