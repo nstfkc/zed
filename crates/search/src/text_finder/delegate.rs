@@ -88,6 +88,12 @@ pub struct Delegate {
     pub(crate) max_line_number: u32,
     pub(crate) selected_matches: Vec<SelectedMatch>,
     pub(crate) collapsed_paths: HashSet<ProjectPath>,
+    /// When a non-regex query has more than one whitespace-separated term, the
+    /// underlying search runs as a regex alternation of the terms and this holds
+    /// the (deduplicated, lowercased when case-insensitive) term list. Results
+    /// are then filtered so only lines containing every term survive. Empty for
+    /// single-term or regex queries, in which case no line-level filtering runs.
+    pub(crate) and_terms: Vec<String>,
 }
 
 /// Wrapper with Eq is path + range equality
@@ -275,6 +281,8 @@ impl Delegate {
                     picker,
                     results_stream,
                     ImportedMatches::Yes,
+                    Vec::new(),
+                    false,
                     cx,
                 )
                 .await;
@@ -327,6 +335,7 @@ impl Delegate {
                 max_line_number: 0,
                 selected_matches: Vec::new(),
                 collapsed_paths: HashSet::default(),
+                and_terms: Vec::new(),
             });
 
             this
@@ -859,6 +868,9 @@ impl PickerDelegate for Delegate {
             })
         });
 
+        let and_terms = self.and_terms.clone();
+        let case_sensitive = self.search_options.contains(SearchOptions::CASE_SENSITIVE);
+
         let (signal_done, match_updating_done) = futures::channel::oneshot::channel();
         self.in_progress_search =
             InProgressSearch::Connected(cx.spawn_in(window, async move |picker, cx| {
@@ -876,6 +888,8 @@ impl PickerDelegate for Delegate {
                     picker,
                     search_results,
                     ImportedMatches::No,
+                    and_terms,
+                    case_sensitive,
                     cx,
                 )
                 .await;
@@ -1201,6 +1215,8 @@ async fn stream_results_to_picker(
     picker: gpui::WeakEntity<Picker<Delegate>>,
     search_results: SearchResults<SearchResult>,
     imported_matches: ImportedMatches,
+    and_terms: Vec<String>,
+    case_sensitive: bool,
     cx: &mut AsyncApp,
 ) -> Option<SearchResults<SearchResult>> {
     let mut results_stream = std::pin::pin!(
@@ -1229,7 +1245,13 @@ async fn stream_results_to_picker(
                 SearchResult::Buffer { buffer, ranges } => {
                     let remaining = cap.saturating_sub(total_matches + batch_matches.len());
                     let capped = ranges.len().min(remaining);
-                    let matches = Delegate::process_search_result(&buffer, &ranges[..capped], cx);
+                    let matches = Delegate::process_search_result(
+                        &buffer,
+                        &ranges[..capped],
+                        &and_terms,
+                        case_sensitive,
+                        cx,
+                    );
                     batch_matches.extend(matches);
                     if capped < ranges.len() {
                         limit_reached = true;
@@ -1420,6 +1442,75 @@ impl Delegate {
         let match_full_paths = self.project(cx).read(cx).visible_worktrees(cx).count() > 1;
         let open_buffers = None;
 
+        let case_sensitive = self.search_options.contains(SearchOptions::CASE_SENSITIVE);
+        let whole_word = self.search_options.contains(SearchOptions::WHOLE_WORD);
+        let is_regex = self.search_options.contains(SearchOptions::REGEX);
+
+        // Deduplicate the whitespace-separated terms, comparing case-insensitively
+        // unless the case-sensitive option is set. The original spelling is kept
+        // for building the regex; the normalized spelling is stored for filtering.
+        let mut unique_terms: Vec<String> = Vec::new();
+        for term in query.split_whitespace() {
+            let already_present = unique_terms.iter().any(|existing| {
+                if case_sensitive {
+                    existing == term
+                } else {
+                    existing.eq_ignore_ascii_case(term)
+                }
+            });
+            if !already_present {
+                unique_terms.push(term.to_string());
+            }
+        }
+
+        if !is_regex && unique_terms.len() > 1 {
+            // Regex has no lookahead, so a line-level AND cannot be expressed in
+            // the pattern. Instead match any single term with an alternation and
+            // filter down to lines containing all of them in `process_search_result`.
+            // Terms are tried longest-first so an overlapping longer term wins.
+            let mut sorted_terms = unique_terms.clone();
+            sorted_terms.sort_by_key(|term| std::cmp::Reverse(term.len()));
+            let pattern = sorted_terms
+                .iter()
+                .map(|term| {
+                    let escaped = regex::escape(term);
+                    if whole_word {
+                        format!("\\b{escaped}\\b")
+                    } else {
+                        escaped
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+
+            self.and_terms = unique_terms
+                .iter()
+                .map(|term| {
+                    if case_sensitive {
+                        term.clone()
+                    } else {
+                        term.to_lowercase()
+                    }
+                })
+                .collect();
+
+            return SearchQuery::regex(
+                pattern,
+                // Word boundaries are already baked into each alternative above.
+                false,
+                case_sensitive,
+                self.search_options.contains(SearchOptions::INCLUDE_IGNORED),
+                false,
+                files_to_include,
+                files_to_exclude,
+                match_full_paths,
+                open_buffers,
+            )
+            .log_err();
+        }
+
+        self.and_terms = Vec::new();
+
         self.search_options
             .build_query(
                 query,
@@ -1432,9 +1523,15 @@ impl Delegate {
     }
 
     /// Create things from MB
+    ///
+    /// When `and_terms` is non-empty (a multi-word text-finder query), the raw
+    /// alternation matches are filtered so only lines containing every term
+    /// survive; all matches on a surviving line are kept so each term highlights.
     pub(crate) fn process_search_result(
         buffer: &Entity<Buffer>,
         ranges: &[Range<Anchor>],
+        and_terms: &[String],
+        case_sensitive: bool,
         cx: &AsyncApp,
     ) -> Vec<SearchMatch> {
         if ranges.is_empty() {
@@ -1464,8 +1561,63 @@ impl Delegate {
                     });
                 }
             }
-            matches
+
+            if and_terms.is_empty() {
+                return matches;
+            }
+
+            Self::filter_lines_matching_all_terms(buf, matches, and_terms, case_sensitive)
         })
+    }
+
+    /// Keep only matches on lines that contain every term in `and_terms`. Each
+    /// match's text is looked up in the buffer and compared (case-insensitively
+    /// unless `case_sensitive`) against the term list to record which terms a
+    /// line covers. Result ordering is preserved.
+    fn filter_lines_matching_all_terms(
+        buffer: &Buffer,
+        matches: Vec<SearchMatch>,
+        and_terms: &[String],
+        case_sensitive: bool,
+    ) -> Vec<SearchMatch> {
+        let mut matches_by_line: HashMap<u32, Vec<usize>> = HashMap::default();
+        for (index, search_match) in matches.iter().enumerate() {
+            matches_by_line
+                .entry(search_match.line_number)
+                .or_default()
+                .push(index);
+        }
+
+        let mut keep = vec![false; matches.len()];
+        for indices in matches_by_line.values() {
+            let mut term_present = vec![false; and_terms.len()];
+            for &index in indices {
+                let matched_text = buffer
+                    .text_for_range(matches[index].range.clone())
+                    .collect::<String>();
+                let matched_text = if case_sensitive {
+                    matched_text
+                } else {
+                    matched_text.to_lowercase()
+                };
+                if let Some(term_index) =
+                    and_terms.iter().position(|term| term == &matched_text)
+                {
+                    term_present[term_index] = true;
+                }
+            }
+            if term_present.iter().all(|&present| present) {
+                for &index in indices {
+                    keep[index] = true;
+                }
+            }
+        }
+
+        matches
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(search_match, kept)| kept.then_some(search_match))
+            .collect()
     }
 }
 
@@ -1544,6 +1696,81 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_multi_word_query_matches_lines_with_all_terms(cx: &mut TestAppContext) {
+        use workspace::MultiWorkspace;
+
+        init_test(cx);
+
+        let contents = concat!(
+            "const result = useQuery(user);\n", // line 1: both terms
+            "const other = useQuery(id);\n",    // line 2: only `useQuery`
+            "let user = current;\n",            // line 3: only `user`
+            "let nothing = here;\n",            // line 4: neither term
+        )
+        .to_string();
+        let project = project_with_file(cx, contents).await;
+
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+
+        let delegate = window
+            .update(cx, |_mw, window, cx| {
+                workspace.update(cx, |workspace, cx| Delegate::new(workspace, window, cx))
+            })
+            .unwrap()
+            .await;
+        let picker = window
+            .update(cx, |_mw, window, cx| {
+                cx.new(|cx| Picker::list(delegate, window, cx))
+            })
+            .unwrap();
+
+        let run_query = |query: &'static str, cx: &mut TestAppContext| {
+            window
+                .update(cx, |_mw, window, cx| {
+                    picker.update(cx, |picker, cx| picker.set_query(query, window, cx))
+                })
+                .unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS + 50));
+            cx.run_until_parked();
+        };
+
+        run_query("useQuery user", cx);
+        picker.read_with(cx, |picker, _| {
+            let lines: Vec<u32> = picker
+                .delegate
+                .matches
+                .iter()
+                .map(|search_match| search_match.line_number)
+                .collect();
+            // Only line 1 holds both terms; both matches on it are kept so each
+            // term highlights, and no partial-match line leaks through.
+            assert!(
+                lines.iter().all(|&line| line == 1),
+                "expected only line 1, got {lines:?}"
+            );
+            assert_eq!(lines.len(), 2, "both terms on the line should be kept");
+        });
+
+        run_query("useQuery", cx);
+        picker.read_with(cx, |picker, _| {
+            let mut lines: Vec<u32> = picker
+                .delegate
+                .matches
+                .iter()
+                .map(|search_match| search_match.line_number)
+                .collect();
+            lines.sort_unstable();
+            // Single-word queries are unaffected by the AND filter.
+            assert_eq!(lines, vec![1, 2], "expected `useQuery` on lines 1 and 2");
+        });
+    }
+
+    #[gpui::test]
     async fn test_builds_one_match_per_occurrence(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -1567,7 +1794,9 @@ mod tests {
         let async_cx = cx.to_async();
         let mut matches = Vec::new();
         while let Ok(SearchResult::Buffer { buffer, ranges }) = search.rx.recv().await {
-            matches.extend(Delegate::process_search_result(&buffer, &ranges, &async_cx));
+            matches.extend(Delegate::process_search_result(
+                &buffer, &ranges, &[], false, &async_cx,
+            ));
         }
 
         assert_eq!(matches.len(), expected_matches);
