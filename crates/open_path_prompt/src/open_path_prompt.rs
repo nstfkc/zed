@@ -934,7 +934,11 @@ pub(crate) fn get_dir_and_suffix(query: String, path_style: PathStyle) -> (Strin
             let (mut dir, suffix) = if let Some(index) = query.rfind('/') {
                 (query[..index].to_string(), query[index + 1..].to_string())
             } else {
-                (query, String::new())
+                // No separator: the query is a filter in the current directory,
+                // not a directory to descend into. Relative-path callers (the
+                // directory finder) start at the root with a bare query, so
+                // treating it as a directory would list a nonexistent folder.
+                (String::new(), query)
             };
             if !dir.ends_with('/') {
                 dir.push('/');
@@ -1064,5 +1068,11 @@ mod tests {
         let (dir, suffix) = get_dir_and_suffix("/root/.hidden".into(), PathStyle::Unix);
         assert_eq!(dir, "/root/");
         assert_eq!(suffix, ".hidden");
+
+        // A bare word (no separator) filters the current directory rather than
+        // being treated as a directory name to descend into.
+        let (dir, suffix) = get_dir_and_suffix("app".into(), PathStyle::Unix);
+        assert_eq!(dir, "/");
+        assert_eq!(suffix, "app");
     }
 }
