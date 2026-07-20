@@ -1073,7 +1073,7 @@ pub trait GitRepository: Send + Sync {
         &self,
         branch_name: Option<String>,
         upstream_name: String,
-        rebase: bool,
+        args: PullArgs,
         askpass: AskPassDelegate,
         env: Arc<HashMap<String, String>>,
         // This method takes an AsyncApp to ensure it's invoked on the main thread,
@@ -1197,6 +1197,16 @@ pub enum DiffType {
 pub enum PushOptions {
     SetUpstream,
     Force,
+}
+
+/// Optional flags forwarded to `git pull`, mirroring the magit-style pull
+/// transient's arguments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PullArgs {
+    pub ff_only: bool,
+    pub rebase: bool,
+    pub autostash: bool,
+    pub force: bool,
 }
 
 impl std::fmt::Debug for dyn GitRepository {
@@ -2629,7 +2639,7 @@ impl GitRepository for RealGitRepository {
         &self,
         branch_name: Option<String>,
         remote_name: String,
-        rebase: bool,
+        args: PullArgs,
         ask_pass: AskPassDelegate,
         env: Arc<HashMap<String, String>>,
         cx: AsyncApp,
@@ -2653,8 +2663,17 @@ impl GitRepository for RealGitRepository {
             let mut command = git.build_command(&["pull"]);
             command.envs(env.iter());
 
-            if rebase {
+            if args.ff_only {
+                command.arg("--ff-only");
+            }
+            if args.rebase {
                 command.arg("--rebase");
+            }
+            if args.autostash {
+                command.arg("--autostash");
+            }
+            if args.force {
+                command.arg("--force");
             }
 
             command

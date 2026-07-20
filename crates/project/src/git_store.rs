@@ -37,7 +37,7 @@ use git::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitDiff, CommitFile,
         CommitOptions, CreateWorktreeTarget, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
-        LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
+        LogOrder, LogSource, PullArgs, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
         SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
     },
     stash::{GitStash, StashEntry},
@@ -2894,11 +2894,16 @@ impl GitStore {
 
         let branch_name = envelope.payload.branch_name.map(|name| name.into());
         let remote_name = envelope.payload.remote_name.into();
-        let rebase = envelope.payload.rebase;
+        let args = PullArgs {
+            ff_only: envelope.payload.ff_only,
+            rebase: envelope.payload.rebase,
+            autostash: envelope.payload.autostash,
+            force: envelope.payload.force,
+        };
 
         let remote_message = repository_handle
             .update(&mut cx, |repository_handle, cx| {
-                repository_handle.pull(branch_name, remote_name, rebase, askpass, cx)
+                repository_handle.pull(branch_name, remote_name, args, askpass, cx)
             })
             .await??;
 
@@ -7620,7 +7625,7 @@ impl Repository {
         &mut self,
         branch: Option<SharedString>,
         remote: SharedString,
-        rebase: bool,
+        args: PullArgs,
         askpass: AskPassDelegate,
         _cx: &mut App,
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
@@ -7629,8 +7634,17 @@ impl Repository {
         let id = self.id;
 
         let mut status = "git pull".to_string();
-        if rebase {
+        if args.ff_only {
+            status.push_str(" --ff-only");
+        }
+        if args.rebase {
             status.push_str(" --rebase");
+        }
+        if args.autostash {
+            status.push_str(" --autostash");
+        }
+        if args.force {
+            status.push_str(" --force");
         }
         status.push_str(&format!(" {}", remote));
         if let Some(b) = &branch {
@@ -7651,7 +7665,7 @@ impl Repository {
                             .pull(
                                 branch.as_ref().map(|b| b.to_string()),
                                 remote.to_string(),
-                                rebase,
+                                args,
                                 askpass,
                                 environment.clone(),
                                 cx,
@@ -7669,7 +7683,10 @@ impl Repository {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
                                 askpass_id,
-                                rebase,
+                                rebase: args.rebase,
+                                ff_only: args.ff_only,
+                                autostash: args.autostash,
+                                force: args.force,
                                 branch_name: branch.as_ref().map(|b| b.to_string()),
                                 remote_name: remote.to_string(),
                             })

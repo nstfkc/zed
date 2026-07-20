@@ -450,6 +450,9 @@ message Pull {
   optional string branch_name = 5;
   uint64 askpass_id = 6;
   bool rebase = 7;
+  bool ff_only = 8;
+  bool autostash = 9;
+  bool force = 10;
 }
 
 message RemoteMessageResponse {

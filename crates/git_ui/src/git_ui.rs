@@ -8,7 +8,9 @@ mod blame_ui;
 pub mod clone;
 
 use git::{
-    repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
+    repository::{
+        Branch, CommitDetails, PullArgs, Upstream, UpstreamTracking, UpstreamTrackingStatus,
+    },
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
 };
 use gpui::{
@@ -53,6 +55,7 @@ mod git_runtime_diagnostics;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
+pub mod pull_popup;
 pub(crate) mod remote_output;
 pub mod repository_selector;
 pub mod solo_diff_view;
@@ -221,7 +224,7 @@ pub fn init(cx: &mut App) {
                     return;
                 };
                 panel.update(cx, |panel, cx| {
-                    panel.pull(false, window, cx);
+                    panel.pull(PullArgs::default(), window, cx);
                 });
             });
             workspace.register_action(|workspace, _: &git::PullRebase, window, cx| {
@@ -229,7 +232,14 @@ pub fn init(cx: &mut App) {
                     return;
                 };
                 panel.update(cx, |panel, cx| {
-                    panel.pull(true, window, cx);
+                    panel.pull(
+                        PullArgs {
+                            rebase: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
                 });
             });
         }

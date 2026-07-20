@@ -30,8 +30,9 @@ use git::Oid;
 use git::commit::ParsedCommitMessage;
 use git::repository::{
     Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
-    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions,
-    Remote, RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus,
+    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PullArgs,
+    PushOptions, Remote, RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking,
+    UpstreamTrackingStatus,
     get_git_committer,
 };
 use git::stash::GitStash;
@@ -125,6 +126,10 @@ actions!(
         HideCommitEditor,
         /// Lists branches in the minibuffer to check one out.
         SelectBranch,
+        /// Creates a new branch: pick a base in the minibuffer, then enter a name.
+        CreateBranch,
+        /// Opens the magit-style pull transient in the minibuffer.
+        PullPopup,
         /// Focuses on the changes list.
         FocusChanges,
         /// Select next git panel menu item, and show it in the diff view
@@ -1949,6 +1954,23 @@ impl GitPanel {
         self.workspace
             .update(cx, |workspace, cx| {
                 branch_picker::open_in_minibuffer(workspace, window, cx);
+            })
+            .log_err();
+    }
+
+    fn create_branch(&mut self, _: &CreateBranch, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, cx| {
+                branch_picker::create_in_minibuffer(workspace, window, cx);
+            })
+            .log_err();
+    }
+
+    fn pull_popup(&mut self, _: &PullPopup, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.entity();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::pull_popup::open(workspace, panel, window, cx);
             })
             .log_err();
     }
@@ -3827,7 +3849,7 @@ impl GitPanel {
         .detach();
     }
 
-    pub(crate) fn pull(&mut self, rebase: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pull(&mut self, args: PullArgs, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_push_and_pull(cx) {
             return;
         }
@@ -3871,7 +3893,7 @@ impl GitPanel {
                 .then(|| branch.name().to_owned().into());
 
             let pull = repo.update(cx, |repo, cx| {
-                repo.pull(branch_name, remote.name.clone(), rebase, askpass, cx)
+                repo.pull(branch_name, remote.name.clone(), args, askpass, cx)
             });
 
             let remote_message = pull.await?;
@@ -8109,6 +8131,8 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::hide_commit_editor))
             .on_action(cx.listener(Self::select_branch))
+            .on_action(cx.listener(Self::create_branch))
+            .on_action(cx.listener(Self::pull_popup))
             .on_action(cx.listener(Self::expand_commit_editor))
             .when(has_write_access && has_co_authors, |git_panel| {
                 git_panel.on_action(cx.listener(Self::toggle_fill_co_authors))

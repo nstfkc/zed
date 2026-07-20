@@ -1107,7 +1107,7 @@ impl GitRepository for FakeGitRepository {
         &self,
         _branch: Option<String>,
         _remote: String,
-        _rebase: bool,
+        _args: git::repository::PullArgs,
         _askpass: AskPassDelegate,
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,

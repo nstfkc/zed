@@ -1112,8 +1112,11 @@
     "bindings": {
       "s": "git::StageFile",
       "u": "git::UnstageFile",
+      "x": ["git::RestoreFile", { "skip_prompt": false }],
       "c c": "git_panel::FocusEditor",
       "b b": "git_panel::SelectBranch",
+      "b c": "git_panel::CreateBranch",
+      "shift-f": "git_panel::PullPopup",
       "tab": "menu::SecondaryConfirm",
       "enter": "git::ViewFile",
     },
@@ -1124,6 +1127,28 @@
     "bindings": {
       "cmd-c cmd-c": "git::Commit",
       "cmd-c cmd-k": "git_panel::HideCommitEditor",
+    },
+  },
+  {
+    "context": "BranchNameInput",
+    "use_key_equivalents": true,
+    "bindings": {
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel",
+    },
+  },
+  {
+    "context": "GitPullPopup",
+    "use_key_equivalents": true,
+    "bindings": {
+      "- f": "git_pull_popup::ToggleFfOnly",
+      "- r": "git_pull_popup::ToggleRebase",
+      "- a": "git_pull_popup::ToggleAutostash",
+      "- shift-f": "git_pull_popup::ToggleForce",
+      "p": "git_pull_popup::PullFromUpstream",
+      "u": "git_pull_popup::PullFromUpstream",
+      "escape": "menu::Cancel",
+      "q": "menu::Cancel",
     },
   },
   {
