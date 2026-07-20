@@ -15,7 +15,7 @@ use project::git_store::{Repository, RepositoryEvent};
 use project::project_settings::ProjectSettings;
 use settings::Settings;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use time::OffsetDateTime;
 use ui::{
     Banner, ContextMenu, Divider, HighlightedLabel, Indicator, KeyBinding, ListItem,
@@ -134,65 +134,6 @@ pub fn select_in_minibuffer(
         )
     });
     minibuffer::show(workspace, branch_list, window, cx);
-}
-
-/// Starts the magit-style `b c` create-branch flow in the minibuffer: first the
-/// user picks a base branch from the embedded list, then a single-line input
-/// appears to type the new branch's name, which is created and checked out.
-pub fn create_in_minibuffer(
-    workspace: &mut Workspace,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    let workspace_handle = workspace.weak_handle();
-    let repository = workspace.project().read(cx).active_repository(cx);
-
-    // The base picker reports its choice here just before it dismisses; the
-    // dismiss handler below then reads it to open the name input. A `Mutex` (not
-    // `RefCell`) because `SelectBranchCallback` is an `Arc<dyn Fn>` that must be
-    // `Send + Sync`.
-    let selected_base: Arc<Mutex<Option<SharedString>>> = Arc::new(Mutex::new(None));
-
-    let on_select: SelectBranchCallback = {
-        let selected_base = selected_base.clone();
-        Arc::new(move |branch, _window, _cx| {
-            if let Ok(mut selected_base) = selected_base.lock() {
-                *selected_base = Some(branch.name().to_string().into());
-            }
-        })
-    };
-
-    let branch_list = cx.new(|cx| {
-        BranchList::new_embedded_select(
-            workspace_handle,
-            repository.clone(),
-            rems(34.),
-            on_select,
-            window,
-            cx,
-        )
-    });
-
-    // Subscribe to the picker's dismiss after `minibuffer::show` installs its own
-    // clear-on-dismiss subscription, so on confirm the panel is cleared first and
-    // then replaced here with the single-line name input (subscriptions fire in
-    // registration order). On escape, `selected_base` stays `None` and the
-    // minibuffer simply closes.
-    minibuffer::show(workspace, branch_list.clone(), window, cx);
-    cx.subscribe_in(
-        &branch_list,
-        window,
-        move |workspace, _, _: &DismissEvent, window, cx| {
-            let Some(base_branch) = selected_base.lock().ok().and_then(|mut base| base.take())
-            else {
-                return;
-            };
-            let repository = repository.clone();
-            let input = cx.new(|cx| BranchNameInput::new(repository, base_branch, window, cx));
-            minibuffer::show_with_options(workspace, input, true, window, cx);
-        },
-    )
-    .detach();
 }
 
 pub fn popover(
@@ -673,90 +614,6 @@ impl Render for BranchList {
                     })
                 })
             })
-    }
-}
-
-/// Single-line minibuffer input for the second stage of the `b c` create-branch
-/// flow: the user types a name and the branch is created from the chosen base
-/// (via `git switch -c`, which also checks it out). Confirm creates, Escape
-/// cancels; both dismiss the minibuffer.
-pub struct BranchNameInput {
-    editor: Entity<Editor>,
-    repository: Option<Entity<Repository>>,
-    base_branch: SharedString,
-    focus_handle: FocusHandle,
-}
-
-impl BranchNameInput {
-    fn new(
-        repository: Option<Entity<Repository>>,
-        base_branch: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("New branch name", window, cx);
-            editor
-        });
-        let focus_handle = editor.focus_handle(cx);
-        Self {
-            editor,
-            repository,
-            base_branch,
-            focus_handle,
-        }
-    }
-
-    fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let name = normalize_branch_name(&self.editor.read(cx).text(cx));
-        if name.is_empty() {
-            return;
-        }
-        if let Some(repo) = self.repository.clone() {
-            let base_branch = Some(self.base_branch.to_string());
-            cx.spawn(async move |_, cx| {
-                repo.update(cx, |repo, _| repo.create_branch(name, base_branch))
-                    .await??;
-                anyhow::Ok(())
-            })
-            .detach_and_prompt_err(
-                "Failed to create branch",
-                window,
-                cx,
-                |e, _, _| Some(e.to_string()),
-            );
-        }
-        cx.emit(DismissEvent);
-    }
-
-    fn cancel(&mut self, _: &menu::Cancel, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(DismissEvent);
-    }
-}
-
-impl Focusable for BranchNameInput {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl EventEmitter<DismissEvent> for BranchNameInput {}
-
-impl Render for BranchNameInput {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .key_context("BranchNameInput")
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::cancel))
-            .size_full()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .child(
-                Label::new(format!("Create branch from {}:", self.base_branch)).color(Color::Muted),
-            )
-            .child(div().flex_1().child(self.editor.clone()))
     }
 }
 
