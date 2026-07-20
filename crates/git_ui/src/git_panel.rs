@@ -2047,9 +2047,16 @@ impl GitPanel {
     ) {
         if self.visual_anchor.take().is_some() {
             cx.notify();
-        } else {
-            // No visual selection to cancel; let Escape fall through to whatever
-            // else handles it (e.g. returning focus to the dock).
+        } else if !self.full_screen {
+            // In the dockable panel, Escape with no visual selection falls
+            // through to `git_panel::ToggleFocus` to return focus to the editor.
+            //
+            // In the full-screen Git view we must NOT propagate: the same
+            // `escape` keystroke is also bound to `git_panel::ToggleFocus` in the
+            // shared `GitPanel && ChangesList` context, so falling through would
+            // pop open / focus the dockable Git panel in the sidebar instead of
+            // dismissing the view (see #25). Leaving it unhandled keeps the
+            // full-screen view put without revealing the sidebar panel.
             cx.propagate();
         }
     }
