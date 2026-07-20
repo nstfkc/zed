@@ -173,23 +173,36 @@ pub fn create_in_minibuffer(
         )
     });
 
-    // Subscribe to the picker's dismiss after `minibuffer::show` installs its own
-    // clear-on-dismiss subscription, so on confirm the panel is cleared first and
-    // then replaced here with the single-line name input (subscriptions fire in
-    // registration order). On escape, `selected_base` stays `None` and the
-    // minibuffer simply closes.
+    // When the base picker confirms it invokes `on_select` (recording the base)
+    // and then dismisses. On escape it dismisses with `selected_base` still
+    // `None` and the flow simply ends.
     minibuffer::show(workspace, branch_list.clone(), window, cx);
     cx.subscribe_in(
         &branch_list,
         window,
-        move |workspace, _, _: &DismissEvent, window, cx| {
+        move |_, _, _: &DismissEvent, window, cx| {
             let Some(base_branch) = selected_base.lock().ok().and_then(|mut base| base.take())
             else {
                 return;
             };
             let repository = repository.clone();
-            let input = cx.new(|cx| BranchNameInput::new(repository, base_branch, window, cx));
-            minibuffer::show_with_options(workspace, input, true, window, cx);
+            // Open the name input from a fresh effect cycle rather than inline in
+            // this dismiss handler. `minibuffer::show` installs its own
+            // clear-on-dismiss subscription on the base picker, and showing the
+            // input inline would race that clear: whichever subscription fires
+            // last wins, so a clear that runs after this handler would wipe the
+            // freshly shown input and the create flow would silently end. Deferring
+            // runs after the whole dismiss (base picker clear included) has settled.
+            cx.spawn_in(window, async move |workspace, cx| {
+                workspace
+                    .update_in(cx, |workspace, window, cx| {
+                        let input = cx
+                            .new(|cx| BranchNameInput::new(repository, base_branch, window, cx));
+                        minibuffer::show_with_options(workspace, input, true, window, cx);
+                    })
+                    .log_err();
+            })
+            .detach();
         },
     )
     .detach();
@@ -3498,6 +3511,100 @@ mod tests {
         cx.run_until_parked();
 
         drop(subscription);
+    }
+
+    #[gpui::test]
+    async fn test_create_branch_flow_in_minibuffer(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            cx.bind_keys(settings::KeymapFile::load_panic_on_failure(
+                r#"[
+                    {
+                        "context": "GitBranchSelector || (GitBranchSelector > Picker > Editor)",
+                        "bindings": { "enter": "menu::Confirm" }
+                    },
+                    {
+                        "context": "BranchNameInput",
+                        "bindings": { "enter": "menu::Confirm" }
+                    }
+                ]"#,
+                cx,
+            ));
+        });
+        let (project, repository) = init_fake_repository(cx).await;
+
+        let repo = repository.clone();
+        cx.spawn(async move |mut cx| {
+            repo.update(&mut cx, |repo, _| {
+                repo.create_branch("main".to_string(), None)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        })
+        .await;
+        cx.run_until_parked();
+
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut ctx = VisualTestContext::from_window(window_handle.into(), cx);
+        let cx = &mut ctx;
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            create_in_minibuffer(workspace, window, cx);
+        });
+        cx.run_until_parked();
+
+        let base_picker = workspace
+            .read_with(cx, |workspace, cx| {
+                minibuffer::shown_content::<BranchList>(workspace, cx)
+            })
+            .expect("base branch picker should be shown in the minibuffer");
+
+        base_picker.read_with(cx, |branch_list, cx| {
+            assert!(
+                !branch_list.picker.read(cx).delegate.matches.is_empty(),
+                "the base branch picker should list at least one branch"
+            );
+        });
+
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        let name_input = workspace
+            .read_with(cx, |workspace, cx| {
+                minibuffer::shown_content::<BranchNameInput>(workspace, cx)
+            })
+            .expect("branch name input should be shown after choosing a base branch");
+
+        let input_focused = name_input
+            .update_in(cx, |input, window, _cx| input.focus_handle.is_focused(window));
+        assert!(
+            input_focused,
+            "the branch name input should be focused so the user can type and confirm"
+        );
+
+        name_input.update_in(cx, |input, window, cx| {
+            input.editor.update(cx, |editor, cx| {
+                editor.set_text("my-new-branch", window, cx);
+            });
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        let branches = repository
+            .update(cx, |repo, _| repo.branches())
+            .await
+            .unwrap()
+            .unwrap()
+            .branches;
+        assert!(
+            branches.iter().any(|branch| branch.name() == "my-new-branch"),
+            "the create-branch flow should create the new branch from the chosen base"
+        );
     }
 
     #[gpui::test(iterations = 10)]
