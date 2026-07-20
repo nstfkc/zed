@@ -34,13 +34,13 @@ use git::repository::{
     PullArgs, PushArgs, PushOptions, RebaseAction, RebaseArgs, Remote, RemoteCommandOutput,
     ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus, get_git_committer,
 };
-use git::stash::GitStash;
+use git::stash::{GitStash, StashPushKind};
 use git::status::{DiffStat, StageStatus};
 use git::{Amend, Commit, Signoff, ToggleStaged, repository::RepoPath, status::FileStatus};
 use git::{
     ExpandCommitEditor, GitHostingProviderRegistry, GitRemote, RestoreTrackedFiles, StageAll,
-    StashAll, StashApply, StashPop, ToggleFillCommitEditor, TrashUntrackedFiles, UnstageAll,
-    ViewFile, parse_git_remote_url,
+    StashAll, StashApply, StashIndex, StashKeepIndex, StashPop, StashWorktree,
+    ToggleFillCommitEditor, TrashUntrackedFiles, UnstageAll, ViewFile, parse_git_remote_url,
 };
 use gpui::{
     AbsoluteLength, Action, Anchor, AnyElement, AsyncApp, AsyncWindowContext, ClickEvent,
@@ -3030,6 +3030,49 @@ impl GitPanel {
                     cx.notify();
                 })
             }
+        })
+        .detach();
+    }
+
+    pub fn stash_index(&mut self, _: &StashIndex, _window: &mut Window, cx: &mut Context<Self>) {
+        self.stash_push(StashPushKind::Index, cx);
+    }
+
+    pub fn stash_worktree(
+        &mut self,
+        _: &StashWorktree,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stash_push(StashPushKind::Worktree, cx);
+    }
+
+    pub fn stash_keep_index(
+        &mut self,
+        _: &StashKeepIndex,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stash_push(StashPushKind::KeepIndex, cx);
+    }
+
+    fn stash_push(&mut self, kind: StashPushKind, cx: &mut Context<Self>) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let stash_task = active_repository
+                .update(cx, |repo, cx| repo.stash_push(kind, cx))
+                .await;
+            this.update(cx, |this, cx| {
+                stash_task
+                    .map_err(|e| {
+                        this.show_error_toast("stash", e, cx);
+                    })
+                    .ok();
+                cx.notify();
+            })
         })
         .detach();
     }
@@ -8588,6 +8631,9 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::clean_all))
                     .on_action(cx.listener(Self::generate_commit_message_action))
                     .on_action(cx.listener(Self::stash_all))
+                    .on_action(cx.listener(Self::stash_index))
+                    .on_action(cx.listener(Self::stash_worktree))
+                    .on_action(cx.listener(Self::stash_keep_index))
                     .on_action(cx.listener(Self::stash_pop))
             })
             .on_action(cx.listener(Self::collapse_selected_entry))

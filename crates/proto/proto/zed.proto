@@ -501,7 +501,8 @@ message Envelope {
     GitRebase git_rebase = 470;
     DescribeHead describe_head = 471;
     DescribeHeadResponse describe_head_response = 472;
-    GitRestore git_restore = 473; // current max
+    StashPush stash_push = 473;
+    GitRestore git_restore = 474; // current max
   }
 
   reserved 87 to 88;

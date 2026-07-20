@@ -231,6 +231,7 @@
     "context": "vim_mode == normal",
     "bindings": {
       "space .": "file_finder::FindFileInDirectory",
+      "space /": "text_finder::OpenInMinibuffer",
       "space g g": "git_panel::OpenFullScreen",
       "space c c": "exec_command::Toggle",
       "space c l": "exec_command::ToggleHistory",

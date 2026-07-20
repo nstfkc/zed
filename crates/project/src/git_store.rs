@@ -41,7 +41,7 @@ use git::{
         RebaseArgs, Remote, RemoteCommandOutput, RepoPath, ResetMode, SearchCommitArgs,
         UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
     },
-    stash::{GitStash, StashEntry},
+    stash::{GitStash, StashEntry, StashPushKind},
     status::{
         self, DiffStat, DiffTreeType, FileStatus, GitSummary, StatusCode, TrackedStatus, TreeDiff,
         TreeDiffStatus, UnmergedStatus, UnmergedStatusCode,
@@ -768,6 +768,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_stage);
         client.add_entity_request_handler(Self::handle_unstage);
         client.add_entity_request_handler(Self::handle_stash);
+        client.add_entity_request_handler(Self::handle_stash_push);
         client.add_entity_request_handler(Self::handle_stash_pop);
         client.add_entity_request_handler(Self::handle_stash_apply);
         client.add_entity_request_handler(Self::handle_stash_drop);
@@ -2990,6 +2991,29 @@ impl GitStore {
         repository_handle
             .update(&mut cx, |repository_handle, cx| {
                 repository_handle.stash_entries(entries, cx)
+            })
+            .await?;
+
+        Ok(proto::Ack {})
+    }
+
+    async fn handle_stash_push(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::StashPush>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+
+        let kind = match envelope.payload.kind() {
+            proto::stash_push::StashPushKind::Index => StashPushKind::Index,
+            proto::stash_push::StashPushKind::Worktree => StashPushKind::Worktree,
+            proto::stash_push::StashPushKind::KeepIndex => StashPushKind::KeepIndex,
+        };
+
+        repository_handle
+            .update(&mut cx, |repository_handle, cx| {
+                repository_handle.stash_push(kind, cx)
             })
             .await?;
 
@@ -7357,6 +7381,50 @@ impl Repository {
                                 })
                                 .await
                                 .context("sending rebase request")?;
+                            Ok(())
+                        }
+                    }
+                })
+            })?
+            .await??;
+            Ok(())
+        })
+    }
+
+    pub fn stash_push(
+        &mut self,
+        kind: StashPushKind,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        let id = self.id;
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, _| {
+                this.send_job("stash_push", None, move |git_repo, _cx| async move {
+                    match git_repo {
+                        RepositoryState::Local(LocalRepositoryState {
+                            backend,
+                            environment,
+                            ..
+                        }) => backend.stash_push(kind, environment).await,
+                        RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                            client
+                                .request(proto::StashPush {
+                                    project_id: project_id.0,
+                                    repository_id: id.to_proto(),
+                                    kind: match kind {
+                                        StashPushKind::Index => {
+                                            proto::stash_push::StashPushKind::Index.into()
+                                        }
+                                        StashPushKind::Worktree => {
+                                            proto::stash_push::StashPushKind::Worktree.into()
+                                        }
+                                        StashPushKind::KeepIndex => {
+                                            proto::stash_push::StashPushKind::KeepIndex.into()
+                                        }
+                                    },
+                                })
+                                .await
+                                .context("sending stash push request")?;
                             Ok(())
                         }
                     }

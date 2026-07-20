@@ -1,5 +1,5 @@
 use crate::commit::{CommitDiffObject, CommitDiffObjectKind, parse_git_diff_raw};
-use crate::stash::GitStash;
+use crate::stash::{GitStash, StashPushKind};
 use crate::status::{DiffTreeType, GitStatus, TreeDiff};
 use crate::{Oid, RunHook, SHORT_SHA_LENGTH};
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -628,6 +628,7 @@ pub struct Remote {
     pub name: SharedString,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetMode {
     /// Reset the branch pointer, leave index and worktree unchanged (this will make it look like things that were
     /// committed are now staged).
@@ -1102,6 +1103,12 @@ pub trait GitRepository: Send + Sync {
     fn stash_paths(
         &self,
         paths: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
+    fn stash_push(
+        &self,
+        kind: StashPushKind,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
 
@@ -2642,6 +2649,82 @@ impl GitRepository for RealGitRepository {
                     "Failed to stash:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
+                Ok(())
+            })
+            .boxed()
+    }
+
+    fn stash_push(
+        &self,
+        kind: StashPushKind,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        self.executor
+            .spawn(async move {
+                let mut git = git?.envs((*env).clone());
+                match kind {
+                    StashPushKind::Index => {
+                        let output = git
+                            .build_command(&["stash", "push", "--quiet", "--staged"])
+                            .output()
+                            .await?;
+                        anyhow::ensure!(
+                            output.status.success(),
+                            "Failed to stash index:\n{}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    }
+                    StashPushKind::KeepIndex => {
+                        let output = git
+                            .build_command(&["stash", "push", "--quiet", "--keep-index"])
+                            .output()
+                            .await?;
+                        anyhow::ensure!(
+                            output.status.success(),
+                            "Failed to stash:\n{}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    }
+                    StashPushKind::Worktree => {
+                        // Git has no native "stash only the worktree" mode, so build the
+                        // stash commit by hand the way Magit does: record the index and
+                        // worktree as separate commits, store a stash commit whose second
+                        // parent is the index, then reset the worktree back to the index so
+                        // that only the unstaged changes end up in the stash.
+                        let head = git.run(&["rev-parse", "--verify", "HEAD"]).await?;
+                        let branch = git
+                            .run(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+                            .await
+                            .unwrap_or_else(|_| head.clone());
+                        let message = format!("WIP on {branch}: worktree");
+                        let index_tree = git.run(&["write-tree"]).await?;
+                        let index_commit = git
+                            .run(&["commit-tree", &index_tree, "-p", &head, "-m", &message])
+                            .await?;
+                        let worktree_tree = git
+                            .with_temp_index(async |git| {
+                                git.run(&["add", "--update"]).await?;
+                                git.run(&["write-tree"]).await
+                            })
+                            .await?;
+                        let stash_commit = git
+                            .run(&[
+                                "commit-tree",
+                                &worktree_tree,
+                                "-p",
+                                &head,
+                                "-p",
+                                &index_commit,
+                                "-m",
+                                &message,
+                            ])
+                            .await?;
+                        git.run(&["stash", "store", "-m", &message, &stash_commit])
+                            .await?;
+                        git.run(&["checkout-index", "--force", "--all"]).await?;
+                    }
+                }
                 Ok(())
             })
             .boxed()
