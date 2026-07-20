@@ -6273,6 +6273,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec_command"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "futures 0.3.32",
+ "fuzzy",
+ "gpui",
+ "log",
+ "menu",
+ "minibuffer",
+ "picker",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "explorer_command_injector"
 version = "0.1.0"
 dependencies = [
@@ -23222,6 +23240,7 @@ dependencies = [
  "encoding_selector",
  "env_logger 0.11.8",
  "etw_tracing",
+ "exec_command",
  "extension",
  "extension_host",
  "extensions_ui",

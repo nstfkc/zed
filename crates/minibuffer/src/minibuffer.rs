@@ -92,14 +92,14 @@ pub fn show_with_options<V: ManagedView>(
 ) {
     let previous_focus = window.focused(cx);
     let focus_handle = view.focus_handle(cx);
+    // The view's focus handle is read again on dismiss rather than captured,
+    // because content that changes shape while it's open (see
+    // [`set_single_line`]) can move focus to a different handle of its own.
     let subscription = cx.subscribe_in(&view, window, {
-        let focus_handle = focus_handle.clone();
-        move |workspace, _, _: &DismissEvent, window, cx| {
-            let restore_focus = focus_handle.contains_focused(window, cx);
+        move |workspace, view, _: &DismissEvent, window, cx| {
+            let restore_focus = view.focus_handle(cx).contains_focused(window, cx);
             workspace.clear_bottom_panel(cx);
-            if restore_focus
-                && let Some(previous_focus) = &previous_focus
-            {
+            if restore_focus && let Some(previous_focus) = &previous_focus {
                 previous_focus.focus(window, cx);
             }
         }
@@ -111,6 +111,39 @@ pub fn show_with_options<V: ManagedView>(
     });
     workspace.set_bottom_panel(host, cx);
     window.focus(&focus_handle, cx);
+}
+
+/// The view currently shown in the minibuffer, if it is of type `V`. Lets a
+/// feature that opens the minibuffer notice that its own content is already up,
+/// e.g. to close it again instead of replacing it.
+pub fn shown_content<V: Render>(workspace: &Workspace, cx: &App) -> Option<Entity<V>> {
+    workspace
+        .bottom_panel()?
+        .clone()
+        .downcast::<MinibufferHost>()
+        .ok()?
+        .read(cx)
+        .content
+        .clone()
+        .downcast::<V>()
+        .ok()
+}
+
+/// Switches the currently shown minibuffer content between the single-line strip
+/// and the fixed-height panel, for content that changes shape while it is open
+/// (e.g. a command prompt that grows into an output view). Does nothing when the
+/// bottom panel holds something other than minibuffer content.
+pub fn set_single_line(workspace: &Workspace, single_line: bool, cx: &mut App) {
+    let Some(host) = workspace
+        .bottom_panel()
+        .and_then(|panel| panel.clone().downcast::<MinibufferHost>().ok())
+    else {
+        return;
+    };
+    host.update(cx, |host, cx| {
+        host.single_line = single_line;
+        cx.notify();
+    });
 }
 
 /// Wraps minibuffer content in the fixed-height bottom-panel chrome. Holds the

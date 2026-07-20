@@ -68,6 +68,7 @@ members = [
     "crates/etw_tracing",
     "crates/eval_cli",
     "crates/eval_utils",
+    "crates/exec_command",
     "crates/explorer_command_injector",
     "crates/extension",
     "crates/extension_api",
@@ -333,6 +334,7 @@ encoding_selector = { path = "crates/encoding_selector" }
 env_var = { path = "crates/env_var" }
 etw_tracing = { path = "crates/etw_tracing" }
 eval_utils = { path = "crates/eval_utils" }
+exec_command = { path = "crates/exec_command" }
 extension = { path = "crates/extension" }
 extension_host = { path = "crates/extension_host" }
 extensions_ui = { path = "crates/extensions_ui" }
@@ -1012,6 +1014,7 @@ breadcrumbs = { codegen-units = 1 }
 collections = { codegen-units = 1 }
 command_palette = { codegen-units = 1 }
 command_palette_hooks = { codegen-units = 1 }
+exec_command = { codegen-units = 1 }
 feature_flags = { codegen-units = 1 }
 file_icons = { codegen-units = 1 }
 image_viewer = { codegen-units = 1 }

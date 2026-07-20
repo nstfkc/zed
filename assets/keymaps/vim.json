@@ -232,6 +232,8 @@
     "bindings": {
       "space .": "file_finder::FindFileInDirectory",
       "space g g": "git_panel::OpenFullScreen",
+      "space c c": "exec_command::Toggle",
+      "space c l": "exec_command::ToggleHistory",
       "i": "vim::InsertBefore",
       "a": "vim::InsertAfter",
       "ctrl-[": "editor::Cancel",
