@@ -1201,6 +1201,7 @@
     "use_key_equivalents": true,
     "bindings": {
       "enter": "menu::Confirm",
+      "cmd-b": "git_reset_popup::ResetFromBranch",
       "escape": "menu::Cancel",
     },
   },
