@@ -6,7 +6,7 @@ use crate::commit_modal::CommitModal;
 use crate::commit_tooltip::{CommitAvatar, CommitTooltip};
 use crate::commit_view::CommitView;
 use crate::git_panel_settings::GitPanelScrollbarAccessor;
-use crate::project_diff::{DeployBranchDiff, Diff, ProjectDiff};
+use crate::project_diff::{Diff, ProjectDiff};
 use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::SoloDiffView;
 use crate::staged_diff::StagedDiff;
@@ -7330,9 +7330,12 @@ impl GitPanel {
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match (self.git_access, &self.active_repository) {
-            (Some(GitAccess::No), Some(repository)) => self.render_unsafe_repo_ui(repository, cx),
-            (_, None) => self.render_uninitialized_ui(cx),
-            (_, Some(_)) => self.render_no_changes_ui(cx),
+            (Some(GitAccess::No), Some(repository)) => Some(self.render_unsafe_repo_ui(repository, cx)),
+            (_, None) => Some(self.render_uninitialized_ui(cx)),
+            // With an active repository and no entries there are simply no
+            // uncommitted changes, so render nothing rather than a noisy
+            // "No changes to commit" placeholder.
+            (_, Some(_)) => None,
         };
 
         v_flex()
@@ -7340,29 +7343,7 @@ impl GitPanel {
             .flex_1()
             .items_center()
             .justify_center()
-            .child(content)
-    }
-
-    fn render_no_changes_ui(&self, cx: &Context<Self>) -> AnyElement {
-        let show_branch_diff = self.changes_count == 0 && !self.is_on_main_branch(cx);
-
-        v_flex()
-            .gap_1()
-            .items_center()
-            .child(Label::new("No changes to commit").color(Color::Muted))
-            .when(show_branch_diff, |this| {
-                this.child(
-                    Button::new("view_branch_diff", "View Branch Diff")
-                        .label_size(LabelSize::Small)
-                        .style(ButtonStyle::Outlined)
-                        .on_click(move |_, _, cx| {
-                            cx.defer(move |cx| {
-                                cx.dispatch_action(&DeployBranchDiff);
-                            })
-                        }),
-                )
-            })
-            .into_any_element()
+            .children(content)
     }
 
     fn render_unsafe_repo_ui(
@@ -7456,19 +7437,6 @@ impl GitPanel {
         } else {
             Empty.into_any_element()
         }
-    }
-
-    fn is_on_main_branch(&self, cx: &Context<Self>) -> bool {
-        let Some(repo) = self.active_repository.as_ref() else {
-            return false;
-        };
-
-        let Some(branch) = repo.read(cx).branch.as_ref() else {
-            return false;
-        };
-
-        let branch_name = branch.name();
-        matches!(branch_name, "main" | "master")
     }
 
     fn render_buffer_header_controls(
