@@ -1463,6 +1463,33 @@ impl<D: PickerDelegate> Picker<D> {
         }
     }
 
+    /// Resyncs the variable-height [`ElementContainer::List`]'s item count with
+    /// the delegate's current match count, preserving scroll position. A
+    /// `gpui::list` renders exactly as many rows as its [`gpui::ListState`] was
+    /// last `reset` to, and `reset` otherwise only runs in `matches_updated`
+    /// when a query update finishes. Delegates that append matches while a
+    /// search streams in must call this so the new rows become visible
+    /// immediately instead of only once the search completes.
+    /// [`ElementContainer::UniformList`] reads the count on every render, so it
+    /// needs nothing here.
+    pub fn sync_streamed_matches(&mut self, cx: &mut Context<Self>) {
+        let match_count = self.delegate.match_count();
+        if let ElementContainer::List(state) = &mut self.element_container {
+            let offset = state.logical_scroll_top();
+            state.reset(match_count);
+            state.scroll_to(offset);
+        }
+        cx.notify();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn rendered_item_count(&self) -> usize {
+        match &self.element_container {
+            ElementContainer::List(state) => state.item_count(),
+            ElementContainer::UniformList(_) => self.delegate.match_count(),
+        }
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn logical_scroll_top_index(&self) -> usize {
         match &self.element_container {
