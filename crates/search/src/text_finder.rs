@@ -29,12 +29,33 @@ use util::ResultExt as _;
 
 use crate::{ProjectSearchView, SearchOptions, text_finder::delegate::PopulateProjectSearch};
 
-actions!(text_finder, [ToProjectSearch, Fold, Unfold, ToggleFoldAll]);
+actions!(
+    text_finder,
+    [
+        ToProjectSearch,
+        Fold,
+        Unfold,
+        ToggleFoldAll,
+        /// Searches text across the project from the minibuffer instead of a
+        /// centered modal.
+        OpenInMinibuffer
+    ]
+);
+
+/// Where a text finder is shown, which decides how its picker is presented: the
+/// centered modal draws its own chrome and hosts a preview pane, while the
+/// minibuffer supplies full-width chrome of its own and shows results only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    Modal,
+    Minibuffer,
+}
 
 pub struct TextFinder {
     picker: Entity<Picker<Delegate>>,
     init_modifiers: Option<Modifiers>,
     workspace_id: Option<WorkspaceId>,
+    placement: Placement,
     _subscription: Subscription,
 }
 
@@ -144,6 +165,11 @@ impl TextFinder {
                 });
             })
         });
+
+        workspace.register_action(|workspace, _: &OpenInMinibuffer, window, cx| {
+            let seed_query = Self::seed_query(workspace, window, cx);
+            Self::open_in_minibuffer(seed_query, window, cx).detach();
+        });
     }
 
     pub fn open_from_project_search<T: 'static>(
@@ -161,7 +187,7 @@ impl TextFinder {
                     remove_project_search_tab(project_search_item_id, workspace, window, cx);
                     let workspace_id = workspace.database_id();
                     workspace.toggle_modal(window, cx, |window, cx| {
-                        Self::new(delegate, None, workspace_id, window, cx)
+                        Self::new(delegate, None, workspace_id, Placement::Modal, window, cx)
                     });
                 })
                 .ok();
@@ -384,8 +410,49 @@ impl TextFinder {
                 .update_in(cx, |workspace, window, cx| {
                     let workspace_id = workspace.database_id();
                     workspace.toggle_modal(window, cx, |window, cx| {
-                        Self::new(delegate, seed_query, workspace_id, window, cx)
+                        Self::new(
+                            delegate,
+                            seed_query,
+                            workspace_id,
+                            Placement::Modal,
+                            window,
+                            cx,
+                        )
                     });
+                })
+                .ok();
+        })
+    }
+
+    /// Opens the text finder in the workspace's minibuffer instead of a centered
+    /// modal, for the keyboard-driven `space /` flow.
+    pub(crate) fn open_in_minibuffer(
+        seed_query: Option<SearchSeed>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Task<()> {
+        cx.spawn_in(window, async move |workspace, cx| {
+            let Ok(delegate_task) = workspace.update_in(cx, |workspace, window, cx| {
+                Delegate::new(workspace, window, cx)
+            }) else {
+                return;
+            };
+
+            let delegate = delegate_task.await;
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    let workspace_id = workspace.database_id();
+                    let finder = cx.new(|cx| {
+                        Self::new(
+                            delegate,
+                            seed_query,
+                            workspace_id,
+                            Placement::Minibuffer,
+                            window,
+                            cx,
+                        )
+                    });
+                    minibuffer::show(workspace, finder, window, cx);
                 })
                 .ok();
         })
@@ -395,12 +462,20 @@ impl TextFinder {
         delegate: Delegate,
         seed_query: Option<SearchSeed>,
         workspace_id: Option<WorkspaceId>,
+        placement: Placement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let project = delegate.project(cx).clone();
-        let preview = picker_preview::editor_preview(project, window, cx);
-        let picker = cx.new(|cx| Picker::list_with_preview(delegate, preview, window, cx));
+        let picker = match placement {
+            Placement::Modal => {
+                let project = delegate.project(cx).clone();
+                let preview = picker_preview::editor_preview(project, window, cx);
+                cx.new(|cx| Picker::list_with_preview(delegate, preview, window, cx))
+            }
+            Placement::Minibuffer => {
+                cx.new(|cx| Picker::list(delegate, window, cx).embedded().full_width())
+            }
+        };
         let picker_weak = picker.downgrade();
         let picker_focus_handle = picker.focus_handle(cx);
         picker.update(cx, |picker, cx| {
@@ -415,7 +490,16 @@ impl TextFinder {
                 picker.select_query(window, cx);
             }
         });
-        let subscription = cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| {
+        // A minibuffer finder isn't dismissed through `ModalView::on_before_dismiss`,
+        // so the query it should restore next time is persisted here instead.
+        let subscription = cx.subscribe(&picker, |this, picker, _: &DismissEvent, cx| {
+            if this.placement == Placement::Minibuffer {
+                let picker = picker.read(cx);
+                let query = picker.query(cx);
+                if !query.is_empty() {
+                    store_last_search(this.workspace_id, query, picker.delegate.search_options, cx);
+                }
+            }
             cx.emit(DismissEvent);
         });
 
@@ -423,6 +507,7 @@ impl TextFinder {
             picker,
             init_modifiers: window.modifiers().modified().then_some(window.modifiers()),
             workspace_id,
+            placement,
             _subscription: subscription,
         }
     }
@@ -545,6 +630,35 @@ mod tests {
         });
 
         workspace.update(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<TextFinder>(cx).is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_in_minibuffer(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/dir"), json!({"one.rs": "const ONE: usize = 1;"}))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        workspace
+            .update_in(cx, |_, window, cx| {
+                TextFinder::open_in_minibuffer(None, window, cx)
+            })
+            .await;
+
+        workspace.update(cx, |workspace, cx| {
+            assert!(
+                workspace.bottom_panel().is_some(),
+                "text finder should be shown in the minibuffer"
+            );
             assert!(workspace.active_modal::<TextFinder>(cx).is_none());
         });
     }
