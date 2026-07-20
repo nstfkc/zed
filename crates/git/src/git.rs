@@ -74,6 +74,12 @@ actions!(
         UnstageAll,
         /// Stashes all changes in the repository, including untracked files.
         StashAll,
+        /// Stashes only the staged (index) changes.
+        StashIndex,
+        /// Stashes only the unstaged (worktree) changes, keeping the index staged.
+        StashWorktree,
+        /// Stashes all changes but keeps the index staged.
+        StashKeepIndex,
         /// Pops the most recent stash.
         StashPop,
         /// Apply the most recent stash.

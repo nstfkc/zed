@@ -18,6 +18,12 @@ actions!(
     [
         /// Stashes all changes in the working tree.
         StashSave,
+        /// Stashes only the staged (index) changes.
+        StashIndex,
+        /// Stashes only the unstaged (worktree) changes, keeping the index staged.
+        StashWorktree,
+        /// Stashes all changes but keeps the index staged.
+        StashKeepIndex,
         /// Pops the most recent stash entry.
         StashPopLatest,
         /// Applies the most recent stash entry without dropping it.
@@ -75,6 +81,29 @@ impl StashPopup {
         });
     }
 
+    fn stash_index(&mut self, _: &StashIndex, window: &mut Window, cx: &mut Context<Self>) {
+        self.with_panel(cx, |panel, cx| {
+            panel.stash_index(&git::StashIndex, window, cx);
+        });
+    }
+
+    fn stash_worktree(&mut self, _: &StashWorktree, window: &mut Window, cx: &mut Context<Self>) {
+        self.with_panel(cx, |panel, cx| {
+            panel.stash_worktree(&git::StashWorktree, window, cx);
+        });
+    }
+
+    fn stash_keep_index(
+        &mut self,
+        _: &StashKeepIndex,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_panel(cx, |panel, cx| {
+            panel.stash_keep_index(&git::StashKeepIndex, window, cx);
+        });
+    }
+
     fn pop(&mut self, _: &StashPopLatest, window: &mut Window, cx: &mut Context<Self>) {
         self.with_panel(cx, |panel, cx| {
             panel.stash_pop(&git::StashPop, window, cx);
@@ -126,6 +155,9 @@ impl Render for StashPopup {
             .key_context("GitStashPopup")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::stash_index))
+            .on_action(cx.listener(Self::stash_worktree))
+            .on_action(cx.listener(Self::stash_keep_index))
             .on_action(cx.listener(Self::pop))
             .on_action(cx.listener(Self::apply))
             .on_action(cx.listener(Self::drop_latest))
@@ -136,6 +168,9 @@ impl Render for StashPopup {
             .gap_1()
             .child(render_section("Stash"))
             .child(render_action("z", "Save all changes"))
+            .child(render_action("i", "Save index only"))
+            .child(render_action("w", "Save worktree only"))
+            .child(render_action("x", "Save keeping index"))
             .child(div().h_2())
             .child(render_section("Latest stash"))
             .child(render_action("p", "Pop"))

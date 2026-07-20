@@ -376,6 +376,17 @@ message Stash {
   repeated string paths = 3;
 }
 
+message StashPush {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  StashPushKind kind = 3;
+  enum StashPushKind {
+    INDEX = 0;
+    WORKTREE = 1;
+    KEEP_INDEX = 2;
+  }
+}
+
 message StashPop {
   uint64 project_id = 1;
   uint64 repository_id = 2;
