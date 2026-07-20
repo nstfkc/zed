@@ -48,6 +48,7 @@ mod diff_multibuffer;
 pub mod file_diff_view;
 pub mod git_branch_status;
 pub mod git_graph;
+pub mod git_remote_status;
 pub mod git_panel;
 mod git_panel_settings;
 pub mod git_picker;
@@ -75,6 +76,7 @@ pub mod worktree_service;
 pub use blame_ui::GitBlameStatus;
 pub use conflict_view::MergeConflictIndicator;
 pub use git_branch_status::GitBranchStatus;
+pub use git_remote_status::GitRemoteStatus;
 
 pub fn get_provider_icon(name: &str) -> IconName {
     match name {

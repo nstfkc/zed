@@ -386,11 +386,37 @@ fn git_panel_view_options_menu(
 
 // We only allow a single remote operation at a time to avoid concurrent
 // credential prompts and competing ref/working-tree updates.
-#[derive(Clone, Copy)]
-pub(crate) enum RemoteOperationKind {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RemoteOperationKind {
     Fetch,
     Pull,
     Push,
+}
+
+impl RemoteOperationKind {
+    /// Present-progressive label shown while the operation runs.
+    pub fn in_progress_label(self) -> &'static str {
+        match self {
+            RemoteOperationKind::Fetch => "Fetching",
+            RemoteOperationKind::Pull => "Pulling",
+            RemoteOperationKind::Push => "Pushing",
+        }
+    }
+}
+
+/// The finished outcome of a remote operation, kept briefly so it can be shown
+/// in the status bar after `pending_remote_operation` clears.
+#[derive(Clone)]
+pub struct RemoteOperationResult {
+    pub kind: RemoteOperationKind,
+    pub message: SharedString,
+    pub is_error: bool,
+}
+
+/// A snapshot of the panel's remote-operation state for the status bar.
+pub enum RemoteOperationStatus {
+    InProgress(RemoteOperationKind),
+    Finished(RemoteOperationResult),
 }
 
 pub fn register(workspace: &mut Workspace) {
@@ -1025,6 +1051,10 @@ pub struct GitPanel {
     new_staged_count: usize,
     pending_commit: Option<Task<()>>,
     pending_remote_operation: Option<RemoteOperationKind>,
+    /// The most recent finished remote operation, shown in the status bar for a
+    /// short while after it completes.
+    remote_operation_result: Option<RemoteOperationResult>,
+    remote_operation_result_task: Task<()>,
     amend_pending: bool,
     original_commit_message: Option<String>,
     pending_commit_message_restores: BTreeMap<String, SerializedCommitMessage>,
@@ -1354,6 +1384,8 @@ impl GitPanel {
                 diff_stat_total: DiffStat::default(),
                 pending_commit: None,
                 pending_remote_operation: None,
+                remote_operation_result: None,
+                remote_operation_result_task: Task::ready(()),
                 amend_pending,
                 original_commit_message,
                 pending_commit_message_restores,
@@ -4148,6 +4180,11 @@ impl GitPanel {
                         Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
                         Err(e) => {
                             log::error!("Error while fetching {:?}", e);
+                            this.set_remote_operation_result(
+                                format!("{} failed", action.name()),
+                                true,
+                                cx,
+                            );
                             this.show_error_toast(action.name(), e, cx)
                         }
                     }
@@ -4308,6 +4345,7 @@ impl GitPanel {
                 Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
                 Err(e) => {
                     log::error!("Error while pulling {:?}", e);
+                    this.set_remote_operation_result(format!("{} failed", action.name()), true, cx);
                     this.show_error_toast(action.name(), e, cx)
                 }
             })
@@ -4424,6 +4462,7 @@ impl GitPanel {
                 Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
                 Err(e) => {
                     log::error!("Error while pushing {:?}", e);
+                    this.set_remote_operation_result(format!("{} failed", action.name()), true, cx);
                     this.show_error_toast(action.name(), e, cx)
                 }
             })?;
@@ -4567,6 +4606,48 @@ impl GitPanel {
     fn clear_remote_operation(&mut self, cx: &mut Context<Self>) {
         self.pending_remote_operation.take();
         cx.notify();
+    }
+
+    /// The remote-operation state the status bar should surface: the in-progress
+    /// operation if one is running, otherwise the most recent finished result.
+    pub fn remote_operation_status(&self) -> Option<RemoteOperationStatus> {
+        if let Some(kind) = self.pending_remote_operation {
+            Some(RemoteOperationStatus::InProgress(kind))
+        } else {
+            self.remote_operation_result
+                .clone()
+                .map(RemoteOperationStatus::Finished)
+        }
+    }
+
+    /// Records the outcome of the just-finished remote operation so it can be
+    /// shown in the status bar, then clears it after a short delay. Must be
+    /// called while `pending_remote_operation` still holds the operation kind.
+    fn set_remote_operation_result(
+        &mut self,
+        message: impl Into<SharedString>,
+        is_error: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(kind) = self.pending_remote_operation else {
+            return;
+        };
+        self.remote_operation_result = Some(RemoteOperationResult {
+            kind,
+            message: message.into(),
+            is_error,
+        });
+        cx.notify();
+        self.remote_operation_result_task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(6))
+                .await;
+            this.update(cx, |this, cx| {
+                this.remote_operation_result = None;
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     fn get_remote(
@@ -5672,8 +5753,10 @@ impl GitPanel {
 
         let is_push = matches!(action, RemoteAction::Push(_, _));
 
+        let SuccessMessage { message, style } = remote_output::format_output(&action, info);
+        self.set_remote_operation_result(message.clone(), false, cx);
+
         workspace.update(cx, |workspace, cx| {
-            let SuccessMessage { message, style } = remote_output::format_output(&action, info);
             let workspace_weak = cx.weak_entity();
             let operation = action.name();
 
