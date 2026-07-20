@@ -1177,6 +1177,9 @@
     "use_key_equivalents": true,
     "bindings": {
       "z": "git_stash_popup::StashSave",
+      "i": "git_stash_popup::StashIndex",
+      "w": "git_stash_popup::StashWorktree",
+      "x": "git_stash_popup::StashKeepIndex",
       "p": "git_stash_popup::StashPopLatest",
       "a": "git_stash_popup::StashApplyLatest",
       "k": "git_stash_popup::StashDropLatest",

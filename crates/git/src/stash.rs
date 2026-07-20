@@ -16,6 +16,17 @@ pub struct GitStash {
     pub entries: Arc<[StashEntry]>,
 }
 
+/// Which part of the working state a `git stash push` should capture.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StashPushKind {
+    /// Stash only the staged (index) changes: `git stash push --staged`.
+    Index,
+    /// Stash only the unstaged (worktree) changes, keeping the index staged.
+    Worktree,
+    /// Stash all changes but keep the index staged: `git stash push --keep-index`.
+    KeepIndex,
+}
+
 impl GitStash {
     pub fn apply(&mut self, other: GitStash) {
         self.entries = other.entries;
