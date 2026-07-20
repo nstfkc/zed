@@ -75,7 +75,7 @@
       "ctrl-g": "vim::ShowLocation",
       "ctrl-v": "vim::ToggleVisualBlock",
       "ctrl-q": "vim::ToggleVisualBlock",
-      "shift-k": "vim::ShowTypeDefinition",
+      "shift-k": "vim::ShowHover",
       "shift-r": "vim::ToggleReplace",
       "0": "vim::StartOfLine",
       "home": "vim::StartOfLine",

@@ -7,6 +7,7 @@ mod change_list;
 mod command;
 mod digraph;
 mod helix;
+mod hover;
 mod indent;
 mod insert;
 mod mode_indicator;
