@@ -1106,6 +1106,27 @@
     },
   },
   {
+    // Full-screen Git panel magit bindings must be re-declared in the Vim layer
+    // so they win over the generic Vim Git-panel bindings above (e.g. "x", which
+    // Vim otherwise maps to git::ToggleStaged). Mirrors the same context in
+    // default-macos.json.
+    "context": "GitPanel && GitPanelFullScreen && ChangesList && !GitBranchSelector",
+    "use_key_equivalents": true,
+    "bindings": {
+      "s": "git::StageFile",
+      "u": "git::UnstageFile",
+      "x": ["git::RestoreFile", { "skip_prompt": false }],
+      "v": "git_panel::ToggleVisualSelection",
+      "escape": "git_panel::CancelVisualSelection",
+      "c c": "git_panel::FocusEditor",
+      "b b": "git_panel::SelectBranch",
+      "b c": "git_panel::CreateBranch",
+      "shift-f": "git_panel::PullPopup",
+      "tab": "menu::SecondaryConfirm",
+      "enter": "git::ViewFile",
+    },
+  },
+  {
     "context": "Editor && mode == auto_height && VimControl",
     "bindings": {
       // TODO: Implement search

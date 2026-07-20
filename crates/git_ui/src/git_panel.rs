@@ -130,6 +130,10 @@ actions!(
         CreateBranch,
         /// Opens the magit-style pull transient in the minibuffer.
         PullPopup,
+        /// Toggles a vim-style visual selection anchored at the current entry.
+        ToggleVisualSelection,
+        /// Cancels an active vim-style visual selection.
+        CancelVisualSelection,
         /// Focuses on the changes list.
         FocusChanges,
         /// Select next git panel menu item, and show it in the diff view
@@ -1024,6 +1028,9 @@ pub struct GitPanel {
     max_width_item_index: Option<usize>,
     selected_entry: Option<usize>,
     marked_entries: Vec<usize>,
+    /// When set, a vim-style visual selection is active, anchored at this entry
+    /// index; the selection spans from here to `selected_entry` inclusive.
+    visual_anchor: Option<usize>,
     tracked_count: usize,
     tracked_staged_count: usize,
     update_visible_entries_task: Task<()>,
@@ -1346,6 +1353,7 @@ impl GitPanel {
                 max_width_item_index: None,
                 selected_entry: None,
                 marked_entries: Vec::new(),
+                visual_anchor: None,
                 tracked_count: 0,
                 tracked_staged_count: 0,
                 update_visible_entries_task: Task::ready(()),
@@ -1975,6 +1983,63 @@ impl GitPanel {
             .log_err();
     }
 
+    fn toggle_visual_selection(
+        &mut self,
+        _: &ToggleVisualSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.visual_anchor.is_some() {
+            self.visual_anchor = None;
+        } else {
+            self.select_first_entry_if_none(window, cx);
+            self.visual_anchor = self.selected_entry;
+        }
+        cx.notify();
+    }
+
+    fn cancel_visual_selection(
+        &mut self,
+        _: &CancelVisualSelection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.visual_anchor.take().is_some() {
+            cx.notify();
+        } else {
+            // No visual selection to cancel; let Escape fall through to whatever
+            // else handles it (e.g. returning focus to the dock).
+            cx.propagate();
+        }
+    }
+
+    /// The inclusive entry-index range covered by the active visual selection,
+    /// or `None` when visual mode is off.
+    fn visual_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let anchor = self.visual_anchor?;
+        let cursor = self.selected_entry?;
+        Some(anchor.min(cursor)..=anchor.max(cursor))
+    }
+
+    /// The status entries a stage/unstage/revert action should target: the whole
+    /// visual selection when active, otherwise just the selected entry.
+    fn action_target_entries(&self) -> Vec<GitStatusEntry> {
+        if let Some(range) = self.visual_range() {
+            self.entries
+                .get(range)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|entry| entry.status_entry().cloned())
+                .collect()
+        } else {
+            self.get_selected_entry()
+                .and_then(|entry| entry.status_entry())
+                .cloned()
+                .into_iter()
+                .collect()
+        }
+    }
+
     /// Hides the full-screen commit editor without committing and returns focus
     /// to the changes list. In dock mode this is a no-op.
     fn hide_commit_editor(
@@ -2168,6 +2233,16 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A vim-style visual selection reverts every file in the range at once,
+        // behind a single confirmation.
+        if self.visual_range().is_some() {
+            let entries = self.action_target_entries();
+            self.visual_anchor = None;
+            cx.notify();
+            self.revert_entries(entries, window, cx);
+            return;
+        }
+
         let path_style = self.project.read(cx).path_style(cx);
         maybe!({
             let list_entry = self.entries.get(self.selected_entry?)?.clone();
@@ -2211,6 +2286,61 @@ impl GitPanel {
                 .detach();
             Some(())
         });
+    }
+
+    /// Reverts several entries behind a single confirmation. Each entry is then
+    /// reverted with its per-type behavior (tracked files are checked out;
+    /// created files are trashed, which may confirm again).
+    fn revert_entries(
+        &mut self,
+        entries: Vec<GitStatusEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match entries.len() {
+            0 => return,
+            1 => return self.revert_entry(&entries[0], window, cx),
+            _ => {}
+        }
+
+        let path_style = self.project.read(cx).path_style(cx);
+        let mut details = entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .repo_path
+                    .file_name()
+                    .map(|name| name.to_string())
+                    .or_else(|| Some(entry.repo_path.display(path_style).to_string()))
+            })
+            .take(5)
+            .join("\n");
+        if entries.len() > 5 {
+            details.push_str(&format!("\nand {} more…", entries.len() - 5));
+        }
+
+        let prompt = window.prompt(
+            PromptLevel::Warning,
+            &format!("Discard changes to {} files?", entries.len()),
+            Some(&details),
+            &["Discard Changes", "Cancel"],
+            cx,
+        );
+        let prompt = cx.background_spawn(prompt);
+        let this = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                if prompt.await? != 0 {
+                    return anyhow::Ok(());
+                }
+                this.update_in(cx, |this, window, cx| {
+                    for entry in &entries {
+                        this.revert_entry(entry, window, cx);
+                    }
+                })?;
+                Ok(())
+            })
+            .detach();
     }
 
     fn add_to_gitignore(
@@ -2892,15 +3022,16 @@ impl GitPanel {
     }
 
     fn stage_selected(&mut self, _: &git::StageFile, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(selected_entry) = self.get_selected_entry() else {
-            return;
-        };
-        let Some(status_entry) = selected_entry.status_entry() else {
-            return;
-        };
-        if status_entry.staging != StageStatus::Staged {
-            self.change_file_stage(true, vec![status_entry.clone()], cx);
+        let entries = self
+            .action_target_entries()
+            .into_iter()
+            .filter(|entry| entry.staging != StageStatus::Staged)
+            .collect::<Vec<_>>();
+        self.visual_anchor = None;
+        if !entries.is_empty() {
+            self.change_file_stage(true, entries, cx);
         }
+        cx.notify();
     }
 
     fn unstage_selected(
@@ -2909,15 +3040,16 @@ impl GitPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(selected_entry) = self.get_selected_entry() else {
-            return;
-        };
-        let Some(status_entry) = selected_entry.status_entry() else {
-            return;
-        };
-        if status_entry.staging != StageStatus::Unstaged {
-            self.change_file_stage(false, vec![status_entry.clone()], cx);
+        let entries = self
+            .action_target_entries()
+            .into_iter()
+            .filter(|entry| entry.staging != StageStatus::Unstaged)
+            .collect::<Vec<_>>();
+        self.visual_anchor = None;
+        if !entries.is_empty() {
+            self.change_file_stage(false, entries, cx);
         }
+        cx.notify();
     }
 
     fn on_commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
@@ -7404,7 +7536,12 @@ impl GitPanel {
         let display_name = entry.display_name(path_style);
 
         let selected = self.selected_entry == Some(ix);
-        let marked = self.marked_entries.contains(&ix);
+        // A file inside the active visual selection is highlighted like a marked
+        // entry, so the whole range reads as one block.
+        let in_visual_range = self
+            .visual_range()
+            .is_some_and(|range| range.contains(&ix));
+        let marked = self.marked_entries.contains(&ix) || in_visual_range;
         let status_style = settings.status_style;
         let status = entry.status;
         let file_icon = if settings.file_icons {
@@ -8133,6 +8270,8 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::select_branch))
             .on_action(cx.listener(Self::create_branch))
             .on_action(cx.listener(Self::pull_popup))
+            .on_action(cx.listener(Self::toggle_visual_selection))
+            .on_action(cx.listener(Self::cancel_visual_selection))
             .on_action(cx.listener(Self::expand_commit_editor))
             .when(has_write_access && has_co_authors, |git_panel| {
                 git_panel.on_action(cx.listener(Self::toggle_fill_co_authors))

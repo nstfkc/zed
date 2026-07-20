@@ -1113,6 +1113,8 @@
       "s": "git::StageFile",
       "u": "git::UnstageFile",
       "x": ["git::RestoreFile", { "skip_prompt": false }],
+      "v": "git_panel::ToggleVisualSelection",
+      "escape": "git_panel::CancelVisualSelection",
       "c c": "git_panel::FocusEditor",
       "b b": "git_panel::SelectBranch",
       "b c": "git_panel::CreateBranch",
