@@ -25,11 +25,12 @@ use crate::{
 use collections::BTreeSet;
 use convert::ConvertTarget;
 use editor::Editor;
-use editor::{Anchor, SelectionEffects};
+use editor::{Anchor, GotoDefinitionKind, SelectionEffects};
 use editor::{Bias, ToPoint};
 use editor::{display_map::ToDisplayPoint, movement};
-use gpui::{Context, TaskExt, Window, actions};
-use language::{AutoIndentMode, Point, SelectionGoal};
+use gpui::{App, Context, TaskExt, Window, actions};
+use language::{AutoIndentMode, Location, Point, SelectionGoal};
+use text::OffsetRangeExt;
 use log::error;
 use multi_buffer::MultiBufferRow;
 
@@ -92,6 +93,8 @@ actions!(
         ToggleBlockComments,
         /// Shows the current location in the file.
         ShowLocation,
+        /// Shows the type definition of the symbol under the cursor in the status bar.
+        ShowTypeDefinition,
         /// Undoes the last change.
         Undo,
         /// Redoes the last undone change.
@@ -220,6 +223,12 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
 
     Vim::action(editor, cx, |vim, _: &JoinLinesNoWhitespace, window, cx| {
         vim.join_lines_impl(false, window, cx);
+    });
+
+    Vim::action(editor, cx, |vim, _: &ShowTypeDefinition, window, cx| {
+        Vim::take_count(cx);
+        Vim::take_forced_motion(cx);
+        vim.show_type_definition(window, cx);
     });
 
     Vim::action(editor, cx, |vim, _: &GoToPreviousReference, window, cx| {
@@ -1037,6 +1046,32 @@ impl Vim {
         });
     }
 
+    fn show_type_definition(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let definitions = self.update_editor(cx, |_, editor, cx| {
+            let provider = editor.semantics_provider()?;
+            let head = editor.selections.newest_anchor().head();
+            let (buffer, head) = editor.buffer().read(cx).text_anchor_for_position(head, cx)?;
+            provider.definitions(&buffer, head, GotoDefinitionKind::Type, cx)
+        });
+        let Some(Some(definitions)) = definitions else {
+            return;
+        };
+        cx.spawn_in(window, async move |vim, cx| {
+            let links = definitions.await.ok().flatten().unwrap_or_default();
+            vim.update(cx, |vim, cx| {
+                vim.update_editor(cx, |vim, _, cx| {
+                    let label = match links.first() {
+                        Some(link) => type_definition_preview(&link.target, cx),
+                        None => "No type definition found".into(),
+                    };
+                    vim.set_status_label(label, cx);
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn toggle_comments(&mut self, _: &ToggleComments, window: &mut Window, cx: &mut Context<Self>) {
         self.record_current_action(cx);
         self.store_visual_marks(window, cx);
@@ -1182,6 +1217,20 @@ impl Vim {
             self.switch_mode(Mode::Insert, true, window, cx);
         }
     }
+}
+
+fn type_definition_preview(location: &Location, cx: &App) -> String {
+    let buffer = location.buffer.read(cx);
+    let range = location.range.to_point(buffer);
+    let row = range.start.row;
+    let line_text: String = buffer
+        .text_for_range(Point::new(row, 0)..Point::new(row, buffer.line_len(row)))
+        .collect();
+    let prefix = match buffer.file() {
+        Some(file) => format!("{}:{}", file.path().display(file.path_style(cx)), row + 1),
+        None => format!("[No Name]:{}", row + 1),
+    };
+    format!("{}: {}", prefix, line_text.trim())
 }
 
 #[cfg(test)]
