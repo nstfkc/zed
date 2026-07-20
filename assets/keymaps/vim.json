@@ -553,7 +553,7 @@
       "space c": "editor::ToggleComments",
       "space p": "editor::Paste",
       "space y": "editor::Copy",
-      "space /": "pane::DeploySearch",
+      "space /": "text_finder::OpenInMinibuffer",
 
       // View mode
       "z c": "editor::ScrollCursorCenter",
@@ -968,7 +968,7 @@
       "] shift-b": "pane::ActivateLastItem",
       "[ shift-b": ["pane::ActivateItem", 0],
       "space f": "file_finder::Toggle",
-      "space /": "pane::DeploySearch",
+      "space /": "text_finder::OpenInMinibuffer",
       "space shift-s": "project_symbols::Toggle",
       "space w h": "workspace::ActivatePaneLeft",
       "space w j": "workspace::ActivatePaneDown",
