@@ -36,9 +36,10 @@ use git::{
     repository::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitDiff, CommitFile,
         CommitOptions, CreateWorktreeTarget, DiffType, FetchOptions, FileHistoryChangedFileSets,
-        GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
-        LogOrder, LogSource, PullArgs, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
+        GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, HeadDescription,
+        InitialGraphCommitData, LogOrder, LogSource, PullArgs, PushArgs, PushOptions, RebaseAction,
+        RebaseArgs, Remote, RemoteCommandOutput, RepoPath, ResetMode, SearchCommitArgs,
+        UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -60,7 +61,7 @@ use pending_op::{PendingOp, PendingOpId, PendingOps, PendingOpsSummary};
 use postage::stream::Stream as _;
 use rpc::{
     AnyProtoClient, TypedEnvelope,
-    proto::{self, git_reset, split_repository_update},
+    proto::{self, git_rebase, git_reset, split_repository_update},
 };
 use serde::Deserialize;
 use settings::{Settings, WorktreeId};
@@ -752,6 +753,8 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_get_remotes);
         client.add_entity_request_handler(Self::handle_get_branches);
         client.add_entity_request_handler(Self::handle_get_default_branch);
+        client.add_entity_request_handler(Self::handle_describe_head);
+        client.add_entity_request_handler(Self::handle_rebase);
         client.add_entity_request_handler(Self::handle_change_branch);
         client.add_entity_request_handler(Self::handle_create_branch);
         client.add_entity_request_handler(Self::handle_rename_branch);
@@ -2854,6 +2857,12 @@ impl GitStore {
                 proto::push::PushOptions::Force => git::repository::PushOptions::Force,
             });
 
+        let args = PushArgs {
+            force: envelope.payload.force,
+            no_verify: envelope.payload.no_verify,
+            dry_run: envelope.payload.dry_run,
+        };
+
         let branch_name = envelope.payload.branch_name.into();
         let remote_branch_name = envelope.payload.remote_branch_name.into();
         let remote_name = envelope.payload.remote_name.into();
@@ -2865,6 +2874,7 @@ impl GitStore {
                     remote_branch_name,
                     remote_name,
                     options,
+                    args,
                     askpass,
                     cx,
                 )
@@ -3850,6 +3860,7 @@ impl GitStore {
         let mode = match envelope.payload.mode() {
             git_reset::ResetMode::Soft => ResetMode::Soft,
             git_reset::ResetMode::Mixed => ResetMode::Mixed,
+            git_reset::ResetMode::Hard => ResetMode::Hard,
         };
 
         repository_handle
@@ -3858,6 +3869,63 @@ impl GitStore {
             })
             .await??;
         Ok(proto::Ack {})
+    }
+
+    async fn handle_rebase(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitRebase>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+
+        let action = match envelope.payload.action() {
+            git_rebase::Action::Onto => RebaseAction::Onto(
+                envelope
+                    .payload
+                    .ref_name
+                    .clone()
+                    .context("missing ref name for rebase onto")?,
+            ),
+            git_rebase::Action::Continue => RebaseAction::Continue,
+            git_rebase::Action::Skip => RebaseAction::Skip,
+            git_rebase::Action::Abort => RebaseAction::Abort,
+        };
+        let args = RebaseArgs {
+            autostash: envelope.payload.autostash,
+            autosquash: envelope.payload.autosquash,
+        };
+
+        repository_handle
+            .update(&mut cx, |repository_handle, cx| {
+                repository_handle.rebase(action, args, cx)
+            })
+            .await?;
+        Ok(proto::Ack {})
+    }
+
+    async fn handle_describe_head(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::DescribeHead>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::DescribeHeadResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+
+        let description = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.describe_head()
+            })
+            .await??;
+
+        Ok(proto::DescribeHeadResponse {
+            tag: description
+                .as_ref()
+                .map(|description| description.tag.to_string()),
+            distance: description
+                .map(|description| description.distance)
+                .unwrap_or(0),
+        })
     }
 
     async fn handle_checkout_files(
@@ -6096,6 +6164,7 @@ impl Repository {
                             mode: match reset_mode {
                                 ResetMode::Soft => git_reset::ResetMode::Soft.into(),
                                 ResetMode::Mixed => git_reset::ResetMode::Mixed.into(),
+                                ResetMode::Hard => git_reset::ResetMode::Hard.into(),
                             },
                         })
                         .await?;
@@ -7180,6 +7249,52 @@ impl Repository {
         })
     }
 
+    pub fn rebase(
+        &mut self,
+        action: RebaseAction,
+        args: RebaseArgs,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        let id = self.id;
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, _| {
+                this.send_job("rebase", None, move |git_repo, _cx| async move {
+                    match git_repo {
+                        RepositoryState::Local(LocalRepositoryState {
+                            backend,
+                            environment,
+                            ..
+                        }) => backend.rebase(action, args, environment).await,
+                        RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                            let (proto_action, ref_name) = match &action {
+                                RebaseAction::Onto(reference) => {
+                                    (git_rebase::Action::Onto, Some(reference.clone()))
+                                }
+                                RebaseAction::Continue => (git_rebase::Action::Continue, None),
+                                RebaseAction::Skip => (git_rebase::Action::Skip, None),
+                                RebaseAction::Abort => (git_rebase::Action::Abort, None),
+                            };
+                            client
+                                .request(proto::GitRebase {
+                                    project_id: project_id.0,
+                                    repository_id: id.to_proto(),
+                                    action: proto_action as i32,
+                                    ref_name,
+                                    autostash: args.autostash,
+                                    autosquash: args.autosquash,
+                                })
+                                .await
+                                .context("sending rebase request")?;
+                            Ok(())
+                        }
+                    }
+                })
+            })?
+            .await??;
+            Ok(())
+        })
+    }
+
     pub fn stash_pop(
         &mut self,
         index: Option<usize>,
@@ -7513,6 +7628,7 @@ impl Repository {
         remote_branch: SharedString,
         remote: SharedString,
         options: Option<PushOptions>,
+        args: PushArgs,
         askpass: AskPassDelegate,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
@@ -7520,7 +7636,7 @@ impl Repository {
         let askpass_id = util::post_inc(&mut self.latest_askpass_id);
         let id = self.id;
 
-        let args = options
+        let option_arg = options
             .map(|option| match option {
                 PushOptions::SetUpstream => " --set-upstream",
                 PushOptions::Force => " --force-with-lease",
@@ -7539,7 +7655,13 @@ impl Repository {
         let this = cx.weak_entity();
         self.send_job(
             "push",
-            Some(format!("git push {} {} {}:{}", args, remote, branch, remote_branch).into()),
+            Some(
+                format!(
+                    "git push {} {} {}:{}",
+                    option_arg, remote, branch, remote_branch
+                )
+                .into(),
+            ),
             move |git_repo, mut cx| async move {
                 match git_repo {
                     RepositoryState::Local(LocalRepositoryState {
@@ -7553,6 +7675,7 @@ impl Repository {
                                 remote_branch.to_string(),
                                 remote.to_string(),
                                 options,
+                                args,
                                 askpass,
                                 environment.clone(),
                                 cx.clone(),
@@ -7608,6 +7731,9 @@ impl Repository {
                                     }
                                 }
                                     as i32),
+                                force: args.force,
+                                no_verify: args.no_verify,
+                                dry_run: args.dry_run,
                             })
                             .await?;
 
@@ -8354,6 +8480,30 @@ impl Repository {
                 }
             },
         )
+    }
+
+    pub fn describe_head(&mut self) -> oneshot::Receiver<Result<Option<HeadDescription>>> {
+        let id = self.id;
+        self.send_job("describe_head", None, move |repo, _| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.describe_head().await
+                }
+                RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                    let response = client
+                        .request(proto::DescribeHead {
+                            project_id: project_id.0,
+                            repository_id: id.to_proto(),
+                        })
+                        .await?;
+
+                    anyhow::Ok(response.tag.map(|tag| HeadDescription {
+                        tag: tag.into(),
+                        distance: response.distance,
+                    }))
+                }
+            }
+        })
     }
 
     pub fn default_branch(

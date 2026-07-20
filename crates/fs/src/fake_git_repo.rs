@@ -321,7 +321,9 @@ impl GitRepository for FakeGitRepository {
                 ResetMode::Soft => {
                     state.head_contents = snapshot.head_contents;
                 }
-                ResetMode::Mixed => {
+                // The fake repository's worktree lives in the `FakeFs`, not in this
+                // state, so a hard reset behaves like a mixed one here.
+                ResetMode::Mixed | ResetMode::Hard => {
                     state.head_contents = snapshot.head_contents;
                     state.index_contents = state.head_contents.clone();
                 }
@@ -330,6 +332,19 @@ impl GitRepository for FakeGitRepository {
             state.refs.insert("HEAD".into(), snapshot.sha);
             Ok(())
         })
+    }
+
+    fn rebase(
+        &self,
+        _action: git::repository::RebaseAction,
+        _args: git::repository::RebaseArgs,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        async move { Ok(()) }.boxed()
+    }
+
+    fn describe_head(&self) -> BoxFuture<'_, Result<Option<git::repository::HeadDescription>>> {
+        async move { Ok(None) }.boxed()
     }
 
     fn checkout_files(
@@ -1096,6 +1111,7 @@ impl GitRepository for FakeGitRepository {
         _remote_branch: String,
         _remote: String,
         _options: Option<PushOptions>,
+        _args: git::repository::PushArgs,
         _askpass: AskPassDelegate,
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,

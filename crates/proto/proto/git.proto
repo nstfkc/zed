@@ -311,6 +311,22 @@ message GitReset {
   enum ResetMode {
     SOFT = 0;
     MIXED = 1;
+    HARD = 2;
+  }
+}
+
+message GitRebase {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  Action action = 3;
+  optional string ref_name = 4;
+  bool autostash = 5;
+  bool autosquash = 6;
+  enum Action {
+    ONTO = 0;
+    CONTINUE = 1;
+    SKIP = 2;
+    ABORT = 3;
   }
 }
 
@@ -411,6 +427,9 @@ message Push {
   optional PushOptions options = 6;
   uint64 askpass_id = 7;
   string remote_branch_name = 8;
+  bool force = 9;
+  bool no_verify = 10;
+  bool dry_run = 11;
 
   enum PushOptions {
     SET_UPSTREAM = 0;
@@ -520,6 +539,16 @@ message GetDefaultBranch {
 
 message GetDefaultBranchResponse {
   optional string branch = 1;
+}
+
+message DescribeHead {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+}
+
+message DescribeHeadResponse {
+  optional string tag = 1;
+  uint32 distance = 2;
 }
 
 message GetTreeDiff {

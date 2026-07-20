@@ -12,6 +12,7 @@ use ui::prelude::*;
 use workspace::Workspace;
 
 use crate::git_panel::GitPanel;
+use crate::transient::{render_action, render_argument, render_section};
 
 actions!(
     git_pull_popup,
@@ -118,39 +119,6 @@ impl PullPopup {
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
     }
-
-    fn render_argument(
-        &self,
-        key: &'static str,
-        description: &'static str,
-        flag: &'static str,
-        active: bool,
-    ) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .child(Label::new(key).color(Color::Created).size(LabelSize::Small))
-            .child(Label::new(description).color(if active {
-                Color::Default
-            } else {
-                Color::Muted
-            }))
-            .child(Label::new(flag).color(if active {
-                Color::Accent
-            } else {
-                Color::Disabled
-            }))
-    }
-
-    fn render_action_row(
-        &self,
-        key: &'static str,
-        target: &SharedString,
-    ) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .child(Label::new(key).color(Color::Error).size(LabelSize::Small))
-            .child(Label::new(target.clone()).color(Color::Info))
-    }
 }
 
 impl Focusable for PullPopup {
@@ -175,21 +143,26 @@ impl Render for PullPopup {
             .size_full()
             .p_3()
             .gap_1()
-            .child(Label::new("Arguments").color(Color::Accent))
-            .child(self.render_argument(
+            .child(render_section("Arguments"))
+            .child(render_argument(
                 "-f",
                 "Fast-forward only",
                 "(--ff-only)",
                 self.args.ff_only,
             ))
-            .child(self.render_argument(
+            .child(render_argument(
                 "-r",
                 "Rebase local commits",
                 "(--rebase)",
                 self.args.rebase,
             ))
-            .child(self.render_argument("-a", "Autostash", "(--autostash)", self.args.autostash))
-            .child(self.render_argument("-F", "Force", "(--force)", self.args.force))
+            .child(render_argument(
+                "-a",
+                "Autostash",
+                "(--autostash)",
+                self.args.autostash,
+            ))
+            .child(render_argument("-F", "Force", "(--force)", self.args.force))
             .child(div().h_2())
             .child(
                 h_flex()
@@ -198,7 +171,7 @@ impl Render for PullPopup {
                     .child(Label::new(self.into_branch.clone()).color(Color::Info))
                     .child(Label::new("from").color(Color::Muted)),
             )
-            .child(self.render_action_row("p", &self.upstream))
-            .child(self.render_action_row("u", &self.upstream))
+            .child(render_action("p", self.upstream.clone()))
+            .child(render_action("u", self.upstream.clone()))
     }
 }
