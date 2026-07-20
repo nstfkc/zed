@@ -1420,6 +1420,41 @@ fn render_matched_line(search_match: &SearchMatch, cx: &App) -> StyledText {
     StyledText::new(line_text.to_string()).with_default_highlights(&text_style, highlights)
 }
 
+/// Split a text-finder query into search tokens. Text inside matching double
+/// quotes becomes a single phrase token with its internal whitespace preserved
+/// and the quote characters stripped; text outside quotes is split on
+/// whitespace into word tokens. An unmatched opening quote runs to the end of
+/// the string as a phrase, and empty tokens (including a lone trailing `"`) are
+/// dropped, so a quote character never appears inside an emitted token.
+fn tokenize_query(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+
+    for character in query.chars() {
+        if character == '"' {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            in_quote = !in_quote;
+        } else if in_quote {
+            current.push(character);
+        } else if character.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(character);
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+}
+
 impl Delegate {
     pub(crate) fn build_search_query(
         &mut self,
@@ -1446,24 +1481,48 @@ impl Delegate {
         let whole_word = self.search_options.contains(SearchOptions::WHOLE_WORD);
         let is_regex = self.search_options.contains(SearchOptions::REGEX);
 
-        // Deduplicate the whitespace-separated terms, comparing case-insensitively
-        // unless the case-sensitive option is set. The original spelling is kept
-        // for building the regex; the normalized spelling is stored for filtering.
+        // Regex queries are used verbatim; tokenization would corrupt the pattern.
+        if is_regex {
+            self.and_terms = Vec::new();
+            return self
+                .search_options
+                .build_query(
+                    query,
+                    files_to_include,
+                    files_to_exclude,
+                    match_full_paths,
+                    open_buffers,
+                )
+                .log_err();
+        }
+
+        // Split the query into quote-aware tokens (a `"..."` phrase is one token,
+        // everything else splits on whitespace), then deduplicate them comparing
+        // case-insensitively unless the case-sensitive option is set. The original
+        // spelling is kept for building the regex; the normalized spelling is
+        // stored for filtering.
         let mut unique_terms: Vec<String> = Vec::new();
-        for term in query.split_whitespace() {
+        for term in tokenize_query(query) {
             let already_present = unique_terms.iter().any(|existing| {
                 if case_sensitive {
-                    existing == term
+                    existing == &term
                 } else {
-                    existing.eq_ignore_ascii_case(term)
+                    existing.eq_ignore_ascii_case(&term)
                 }
             });
             if !already_present {
-                unique_terms.push(term.to_string());
+                unique_terms.push(term);
             }
         }
 
-        if !is_regex && unique_terms.len() > 1 {
+        // A query consisting only of quotes/whitespace yields no tokens; treat it
+        // like the empty-query case so we clear results instead of searching.
+        let Some(first_term) = unique_terms.first() else {
+            self.and_terms = Vec::new();
+            return None;
+        };
+
+        if unique_terms.len() > 1 {
             // Regex has no lookahead, so a line-level AND cannot be expressed in
             // the pattern. Instead match any single term with an alternation and
             // filter down to lines containing all of them in `process_search_result`.
@@ -1511,9 +1570,12 @@ impl Delegate {
 
         self.and_terms = Vec::new();
 
+        // Search the parsed token, not the raw query, so a single quoted phrase
+        // like `"foo bar"` searches for `foo bar` rather than the literal text
+        // including the quote characters.
         self.search_options
             .build_query(
-                query,
+                first_term,
                 files_to_include,
                 files_to_exclude,
                 match_full_paths,
@@ -1756,6 +1818,23 @@ mod tests {
             assert_eq!(lines.len(), 2, "both terms on the line should be kept");
         });
 
+        // Quoting a single term must not change the AND behavior: `useQuery "user"`
+        // still requires both terms on the line.
+        run_query("useQuery \"user\"", cx);
+        picker.read_with(cx, |picker, _| {
+            let lines: Vec<u32> = picker
+                .delegate
+                .matches
+                .iter()
+                .map(|search_match| search_match.line_number)
+                .collect();
+            assert!(
+                lines.iter().all(|&line| line == 1),
+                "expected only line 1, got {lines:?}"
+            );
+            assert_eq!(lines.len(), 2, "both terms on the line should be kept");
+        });
+
         run_query("useQuery", cx);
         picker.read_with(cx, |picker, _| {
             let mut lines: Vec<u32> = picker
@@ -1768,6 +1847,94 @@ mod tests {
             // Single-word queries are unaffected by the AND filter.
             assert_eq!(lines, vec![1, 2], "expected `useQuery` on lines 1 and 2");
         });
+
+        // A stray trailing quote must not break the search: `useQuery "` should
+        // still return `useQuery` matches rather than filtering everything out.
+        run_query("useQuery \"", cx);
+        picker.read_with(cx, |picker, _| {
+            let mut lines: Vec<u32> = picker
+                .delegate
+                .matches
+                .iter()
+                .map(|search_match| search_match.line_number)
+                .collect();
+            lines.sort_unstable();
+            assert_eq!(
+                lines,
+                vec![1, 2],
+                "stray trailing quote should still match `useQuery`"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_quoted_phrase_query_matches_adjacent_terms(cx: &mut TestAppContext) {
+        use workspace::MultiWorkspace;
+
+        init_test(cx);
+
+        let contents = concat!(
+            "run foo bar now;\n", // line 1: exact phrase `foo bar`
+            "foo then bar;\n",    // line 2: both words, but not adjacent
+            "nothing here;\n",    // line 3: neither
+        )
+        .to_string();
+        let project = project_with_file(cx, contents).await;
+
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+
+        let delegate = window
+            .update(cx, |_mw, window, cx| {
+                workspace.update(cx, |workspace, cx| Delegate::new(workspace, window, cx))
+            })
+            .unwrap()
+            .await;
+        let picker = window
+            .update(cx, |_mw, window, cx| {
+                cx.new(|cx| Picker::list(delegate, window, cx))
+            })
+            .unwrap();
+
+        window
+            .update(cx, |_mw, window, cx| {
+                picker.update(cx, |picker, cx| {
+                    picker.set_query("\"foo bar\"", window, cx)
+                })
+            })
+            .unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS + 50));
+        cx.run_until_parked();
+
+        picker.read_with(cx, |picker, _| {
+            let lines: Vec<u32> = picker
+                .delegate
+                .matches
+                .iter()
+                .map(|search_match| search_match.line_number)
+                .collect();
+            // The phrase is a single literal token, so only the line with the
+            // adjacent `foo bar` matches; the split-apart line is excluded.
+            assert_eq!(lines, vec![1], "expected only the adjacent-phrase line");
+        });
+    }
+
+    #[test]
+    fn test_tokenize_query() {
+        assert_eq!(tokenize_query("useQuery user"), vec!["useQuery", "user"]);
+        assert_eq!(tokenize_query("\"foo bar\""), vec!["foo bar"]);
+        assert_eq!(tokenize_query("useQuery \"user\""), vec!["useQuery", "user"]);
+        // Unterminated quote runs to end of string as a phrase.
+        assert_eq!(tokenize_query("foo \"bar baz"), vec!["foo", "bar baz"]);
+        // A lone trailing quote is dropped, never emitted as a token.
+        assert_eq!(tokenize_query("useQuery \""), vec!["useQuery"]);
+        // Only-quotes / only-whitespace yields no tokens.
+        assert!(tokenize_query("\"\"").is_empty());
+        assert!(tokenize_query("   ").is_empty());
     }
 
     #[gpui::test]
