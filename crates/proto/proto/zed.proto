@@ -497,7 +497,10 @@ message Envelope {
     TrashProjectEntry trash_project_entry = 466;
     TrashProjectEntryResponse trash_project_entry_response = 467;
     RestoreProjectEntry restore_project_entry = 468;
-    RestoreProjectEntryResponse restore_project_entry_response = 469; // current max
+    RestoreProjectEntryResponse restore_project_entry_response = 469;
+    GitRebase git_rebase = 470;
+    DescribeHead describe_head = 471;
+    DescribeHeadResponse describe_head_response = 472; // current max
   }
 
   reserved 87 to 88;

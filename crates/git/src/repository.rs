@@ -635,6 +635,47 @@ pub enum ResetMode {
     /// Reset the branch pointer and index, leave worktree unchanged (this makes it look as though things that were
     /// committed are now unstaged).
     Mixed,
+    /// Reset the branch pointer, index and worktree, discarding any changes.
+    Hard,
+}
+
+/// Which `git rebase` invocation a rebase transient action maps to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebaseAction {
+    Onto(String),
+    Continue,
+    Skip,
+    Abort,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RebaseArgs {
+    pub autostash: bool,
+    pub autosquash: bool,
+}
+
+/// The nearest tag reachable from HEAD, as reported by `git describe --tags`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadDescription {
+    pub tag: SharedString,
+    /// Number of commits between the tag and HEAD; zero when HEAD is the tag.
+    pub distance: u32,
+}
+
+/// Parses the output of `git describe --tags --long`, which looks like
+/// `v1.2.3-14-gabc1234`. Tag names may themselves contain `-`, so the distance
+/// and abbreviated commit are split off from the end.
+fn parse_head_description(output: &str) -> Option<HeadDescription> {
+    let line = output.trim();
+    let (without_commit, _abbreviated_commit) = line.rsplit_once('-')?;
+    let (tag, distance) = without_commit.rsplit_once('-')?;
+    if tag.is_empty() {
+        return None;
+    }
+    Some(HeadDescription {
+        tag: tag.to_string().into(),
+        distance: distance.parse().ok()?,
+    })
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -973,6 +1014,17 @@ pub trait GitRepository: Send + Sync {
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
 
+    fn rebase(
+        &self,
+        action: RebaseAction,
+        args: RebaseArgs,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
+    /// The nearest tag reachable from HEAD, or `None` when the repository has no
+    /// tags reachable from HEAD.
+    fn describe_head(&self) -> BoxFuture<'_, Result<Option<HeadDescription>>>;
+
     fn checkout_files(
         &self,
         commit: String,
@@ -1062,6 +1114,7 @@ pub trait GitRepository: Send + Sync {
         remote_branch_name: String,
         upstream_name: String,
         options: Option<PushOptions>,
+        args: PushArgs,
         askpass: AskPassDelegate,
         env: Arc<HashMap<String, String>>,
         // This method takes an AsyncApp to ensure it's invoked on the main thread,
@@ -1197,6 +1250,18 @@ pub enum DiffType {
 pub enum PushOptions {
     SetUpstream,
     Force,
+}
+
+/// Extra flags forwarded to `git push`, mirroring the magit-style push transient.
+/// `set_upstream` lives here rather than in [`PushOptions`] so that it can be
+/// combined with a force mode, which `git push` accepts but `PushOptions` cannot
+/// express.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PushArgs {
+    pub set_upstream: bool,
+    pub force: bool,
+    pub no_verify: bool,
+    pub dry_run: bool,
 }
 
 /// Optional flags forwarded to `git pull`, mirroring the magit-style pull
@@ -1597,6 +1662,7 @@ impl GitRepository for RealGitRepository {
             let mode_flag = match mode {
                 ResetMode::Mixed => "--mixed",
                 ResetMode::Soft => "--soft",
+                ResetMode::Hard => "--hard",
             };
 
             let output = git
@@ -1612,6 +1678,78 @@ impl GitRepository for RealGitRepository {
             Ok(())
         }
         .boxed()
+    }
+
+    fn rebase(
+        &self,
+        action: RebaseAction,
+        args: RebaseArgs,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        async move {
+            let git = git?;
+            let mut command_args = vec!["rebase".to_string()];
+            match &action {
+                RebaseAction::Onto(reference) => {
+                    if args.autostash {
+                        command_args.push("--autostash".to_string());
+                    }
+                    if args.autosquash {
+                        // Older git only honours `--autosquash` together with
+                        // `--interactive`, so pair them and accept the generated
+                        // todo list unedited (see `GIT_SEQUENCE_EDITOR` below).
+                        command_args.push("--autosquash".to_string());
+                        command_args.push("--interactive".to_string());
+                    }
+                    command_args.push(reference.clone());
+                }
+                RebaseAction::Continue => command_args.push("--continue".to_string()),
+                RebaseAction::Skip => command_args.push("--skip".to_string()),
+                RebaseAction::Abort => command_args.push("--abort".to_string()),
+            }
+
+            let mut command = git.build_command(&command_args);
+            command.envs(env.iter());
+            // Neither the todo list nor a commit message may open an editor: there
+            // is nobody to close it, so the command would hang forever.
+            if args.autosquash {
+                command.env("GIT_SEQUENCE_EDITOR", "true");
+                command.env("GIT_EDITOR", "true");
+            }
+            if matches!(action, RebaseAction::Continue) {
+                // `git rebase --continue` opens an editor to confirm the commit message
+                // unless one is configured that exits immediately.
+                command.env("GIT_EDITOR", "true");
+            }
+
+            let output = command.output().await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "Failed to rebase:\n{}",
+                String::from_utf8_lossy(&output.stderr),
+            );
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn describe_head(&self) -> BoxFuture<'_, Result<Option<HeadDescription>>> {
+        let git = self.git_binary();
+        self.executor
+            .spawn(async move {
+                let output = git
+                    .build_command(&["describe", "--tags", "--long"])
+                    .output()
+                    .await?;
+                if !output.status.success() {
+                    return Ok(None);
+                }
+                Ok(parse_head_description(&String::from_utf8_lossy(
+                    &output.stdout,
+                )))
+            })
+            .boxed()
     }
 
     fn checkout_files(
@@ -2597,6 +2735,7 @@ impl GitRepository for RealGitRepository {
         remote_branch_name: String,
         remote_name: String,
         options: Option<PushOptions>,
+        args: PushArgs,
         ask_pass: AskPassDelegate,
         env: Arc<HashMap<String, String>>,
         cx: AsyncApp,
@@ -2623,7 +2762,20 @@ impl GitRepository for RealGitRepository {
                 .args(options.map(|option| match option {
                     PushOptions::SetUpstream => "--set-upstream",
                     PushOptions::Force => "--force-with-lease",
-                }))
+                }));
+            if args.set_upstream && options != Some(PushOptions::SetUpstream) {
+                command.arg("--set-upstream");
+            }
+            if args.force {
+                command.arg("--force");
+            }
+            if args.no_verify {
+                command.arg("--no-verify");
+            }
+            if args.dry_run {
+                command.arg("--dry-run");
+            }
+            command
                 .arg(remote_name)
                 .arg(format!("{}:{}", branch_name, remote_branch_name))
                 .stdin(Stdio::null())
@@ -4005,6 +4157,34 @@ mod tests {
 
     use super::*;
     use gpui::TestAppContext;
+
+    #[test]
+    fn test_parse_head_description() {
+        assert_eq!(
+            parse_head_description("v1.2.3-14-gabc1234\n"),
+            Some(HeadDescription {
+                tag: "v1.2.3".into(),
+                distance: 14,
+            })
+        );
+        assert_eq!(
+            parse_head_description("v1.2.3-0-gabc1234"),
+            Some(HeadDescription {
+                tag: "v1.2.3".into(),
+                distance: 0,
+            })
+        );
+        assert_eq!(
+            parse_head_description("release-2024-01-5-gabc1234"),
+            Some(HeadDescription {
+                tag: "release-2024-01".into(),
+                distance: 5,
+            })
+        );
+        assert_eq!(parse_head_description(""), None);
+        assert_eq!(parse_head_description("v1.2.3"), None);
+        assert_eq!(parse_head_description("v1.2.3-gabc1234"), None);
+    }
 
     fn disable_git_global_config() {
         unsafe {

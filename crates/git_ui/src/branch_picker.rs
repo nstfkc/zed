@@ -111,6 +111,31 @@ pub fn open_in_minibuffer(
     minibuffer::show(workspace, branch_list, window, cx);
 }
 
+/// Opens the branch picker in the minibuffer in select mode: confirming an entry
+/// hands the chosen branch to `on_select` instead of checking it out. Used by
+/// transients that need a branch as an argument, such as rebase.
+pub fn select_in_minibuffer(
+    workspace: &mut Workspace,
+    on_select: SelectBranchCallback,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let workspace_handle = workspace.weak_handle();
+    let repository = workspace.project().read(cx).active_repository(cx);
+
+    let branch_list = cx.new(|cx| {
+        BranchList::new_embedded_select(
+            workspace_handle,
+            repository,
+            rems(34.),
+            on_select,
+            window,
+            cx,
+        )
+    });
+    minibuffer::show(workspace, branch_list, window, cx);
+}
+
 /// Starts the magit-style `b c` create-branch flow in the minibuffer: first the
 /// user picks a base branch from the embedded list, then a single-line input
 /// appears to type the new branch's name, which is created and checked out.
@@ -163,8 +188,7 @@ pub fn create_in_minibuffer(
                 return;
             };
             let repository = repository.clone();
-            let input =
-                cx.new(|cx| BranchNameInput::new(repository, base_branch, window, cx));
+            let input = cx.new(|cx| BranchNameInput::new(repository, base_branch, window, cx));
             minibuffer::show_with_options(workspace, input, true, window, cx);
         },
     )
@@ -696,9 +720,12 @@ impl BranchNameInput {
                     .await??;
                 anyhow::Ok(())
             })
-            .detach_and_prompt_err("Failed to create branch", window, cx, |e, _, _| {
-                Some(e.to_string())
-            });
+            .detach_and_prompt_err(
+                "Failed to create branch",
+                window,
+                cx,
+                |e, _, _| Some(e.to_string()),
+            );
         }
         cx.emit(DismissEvent);
     }
@@ -727,8 +754,7 @@ impl Render for BranchNameInput {
             .gap_2()
             .px_2()
             .child(
-                Label::new(format!("Create branch from {}:", self.base_branch))
-                    .color(Color::Muted),
+                Label::new(format!("Create branch from {}:", self.base_branch)).color(Color::Muted),
             )
             .child(div().flex_1().child(self.editor.clone()))
     }

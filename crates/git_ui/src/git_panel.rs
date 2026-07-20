@@ -30,10 +30,9 @@ use git::Oid;
 use git::commit::ParsedCommitMessage;
 use git::repository::{
     Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
-    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PullArgs,
-    PushOptions, Remote, RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking,
-    UpstreamTrackingStatus,
-    get_git_committer,
+    GitCommitTemplate, GitCommitter, HeadDescription, InitialGraphCommitData, LogOrder, LogSource,
+    PullArgs, PushArgs, PushOptions, RebaseAction, RebaseArgs, Remote, RemoteCommandOutput,
+    ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus, get_git_committer,
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
@@ -130,6 +129,14 @@ actions!(
         CreateBranch,
         /// Opens the magit-style pull transient in the minibuffer.
         PullPopup,
+        /// Opens the magit-style push transient in the minibuffer.
+        PushPopup,
+        /// Opens the magit-style stash transient in the minibuffer.
+        StashPopup,
+        /// Opens the magit-style reset transient in the minibuffer.
+        ResetPopup,
+        /// Opens the magit-style rebase transient in the minibuffer.
+        RebasePopup,
         /// Toggles a vim-style visual selection anchored at the current entry.
         ToggleVisualSelection,
         /// Cancels an active vim-style visual selection.
@@ -1044,6 +1051,9 @@ pub struct GitPanel {
     full_screen: bool,
     /// Whether the commit editor is currently revealed in full-screen mode.
     commit_editor_revealed: bool,
+    /// The nearest tag reachable from HEAD, shown in the full-screen header.
+    head_description: Option<HeadDescription>,
+    head_description_task: Task<()>,
     show_placeholders: bool,
     // Only read to compute collaborative co-authors, which requires the `call` feature.
     #[cfg_attr(not(feature = "call"), allow(dead_code))]
@@ -1146,7 +1156,10 @@ impl GitPanel {
         cx: &mut Context<Workspace>,
     ) -> Entity<Self> {
         let panel = Self::new_with_serialized_panel(workspace, None, window, cx);
-        panel.update(cx, |panel, _cx| panel.full_screen = true);
+        panel.update(cx, |panel, cx| {
+            panel.full_screen = true;
+            panel.refresh_head_description(cx);
+        });
         panel
     }
 
@@ -1367,6 +1380,8 @@ impl GitPanel {
                 modal_open: false,
                 full_screen: false,
                 commit_editor_revealed: false,
+                head_description: None,
+                head_description_task: Task::ready(()),
                 entry_count: 0,
                 bulk_staging: None,
                 stash_entries: Default::default(),
@@ -1979,6 +1994,42 @@ impl GitPanel {
         self.workspace
             .update(cx, |workspace, cx| {
                 crate::pull_popup::open(workspace, panel, window, cx);
+            })
+            .log_err();
+    }
+
+    fn push_popup(&mut self, _: &PushPopup, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.entity();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::push_popup::open(workspace, panel, window, cx);
+            })
+            .log_err();
+    }
+
+    fn stash_popup(&mut self, _: &StashPopup, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.entity();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::stash_popup::open(workspace, panel, window, cx);
+            })
+            .log_err();
+    }
+
+    fn reset_popup(&mut self, _: &ResetPopup, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.entity();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::reset_popup::open(workspace, panel, window, cx);
+            })
+            .log_err();
+    }
+
+    fn rebase_popup(&mut self, _: &RebasePopup, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.entity();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::rebase_popup::open(workspace, panel, window, cx);
             })
             .log_err();
     }
@@ -2979,6 +3030,105 @@ impl GitPanel {
                     cx.notify();
                 })
             }
+        })
+        .detach();
+    }
+
+    pub fn stash_drop_latest(&mut self, cx: &mut Context<Self>) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let stash_task = active_repository
+                .update(cx, |repo, cx| repo.stash_drop(None, cx))
+                .await?;
+            this.update(cx, |this, cx| {
+                stash_task
+                    .map_err(|e| {
+                        this.show_error_toast("stash drop", e, cx);
+                    })
+                    .ok();
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
+    pub(crate) fn reset_to(
+        &mut self,
+        revision: String,
+        mode: ResetMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+
+        // A hard reset throws away staged and unstaged work with no way to get it
+        // back, so it is confirmed like discarding changes to a file. Soft and
+        // mixed resets leave the working tree alone and run straight away.
+        let confirmation = match mode {
+            ResetMode::Hard => {
+                let prompt = window.prompt(
+                    PromptLevel::Warning,
+                    &format!(
+                        "Are you sure you want to reset --hard to {}?",
+                        MarkdownInlineCode(&revision)
+                    ),
+                    Some("All staged and unstaged changes in the working tree will be discarded."),
+                    &["Discard Changes", "Cancel"],
+                    cx,
+                );
+                cx.background_spawn(prompt)
+            }
+            ResetMode::Soft | ResetMode::Mixed => Task::ready(Ok(0)),
+        };
+
+        cx.spawn(async move |this, cx| {
+            if confirmation.await? != 0 {
+                return anyhow::Ok(());
+            }
+            let reset_task = active_repository
+                .update(cx, |repo, cx| repo.reset(revision, mode, cx))
+                .await?;
+            this.update(cx, |this, cx| {
+                reset_task
+                    .map_err(|e| {
+                        this.show_error_toast("reset", e, cx);
+                    })
+                    .ok();
+                cx.notify();
+            })?;
+            Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
+    pub(crate) fn rebase(
+        &mut self,
+        action: RebaseAction,
+        args: RebaseArgs,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let result = active_repository
+                .update(cx, |repo, cx| repo.rebase(action, args, cx))
+                .await;
+            this.update(cx, |this, cx| {
+                result
+                    .map_err(|e| {
+                        this.show_error_toast("rebase", e, cx);
+                    })
+                    .ok();
+                cx.notify();
+            })
         })
         .detach();
     }
@@ -4052,6 +4202,17 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.push_with_args(PushArgs::default(), force_push, select_remote, window, cx);
+    }
+
+    pub(crate) fn push_with_args(
+        &mut self,
+        args: PushArgs,
+        force_with_lease: bool,
+        select_remote: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.can_push_and_pull(cx) {
             return;
         }
@@ -4067,7 +4228,10 @@ impl GitPanel {
 
         telemetry::event!("Git Pushed");
 
-        let options = if force_push {
+        // An explicit `--set-upstream` travels in `args` so it can be combined
+        // with a force mode; `options` only picks the force mode, falling back to
+        // setting the upstream when the branch doesn't track one yet.
+        let options = if force_with_lease {
             Some(PushOptions::Force)
         } else {
             match branch.upstream {
@@ -4124,6 +4288,7 @@ impl GitPanel {
                         .into(),
                     remote.name.clone(),
                     options,
+                    args,
                     askpass_delegate,
                     cx,
                 )
@@ -4659,6 +4824,7 @@ impl GitPanel {
             }
         }
         self.active_repository = new_active_repository;
+        self.refresh_head_description(cx);
         self.reopen_commit_buffer(window, cx);
         self.preload_commit_history(cx);
         if self.active_tab == GitPanelTab::History {
@@ -5842,6 +6008,104 @@ impl GitPanel {
                 }),
             self.render_git_changes_actions_menu("git-changes-actions-split-button-menu", cx)
                 .into_any_element(),
+        )
+    }
+
+    /// Looks up the nearest tag reachable from HEAD for the full-screen header.
+    /// Only the full-screen panel shows it, so the dockable panel doesn't pay for
+    /// the extra git invocation.
+    fn refresh_head_description(&mut self, cx: &mut Context<Self>) {
+        if !self.full_screen {
+            return;
+        }
+        let Some(repository) = self.active_repository.clone() else {
+            self.head_description = None;
+            self.head_description_task = Task::ready(());
+            return;
+        };
+        self.head_description_task = cx.spawn(async move |this, cx| {
+            let description = maybe!(async {
+                let description = repository
+                    .update(cx, |repository, _| repository.describe_head())
+                    .await??;
+                anyhow::Ok(description)
+            })
+            .await;
+            this.update(cx, |this, cx| {
+                this.head_description = description.log_err().flatten();
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// The magit-style `Head:` / `Tag:` summary shown above the changes list in
+    /// the full-screen panel.
+    fn render_head_header(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
+        if !self.full_screen {
+            return None;
+        }
+        let branch = self.active_repository.as_ref()?.read(cx).branch.clone()?;
+        let commit = branch.most_recent_commit.as_ref();
+        let short_sha: Option<SharedString> = commit.map(|commit| {
+            commit
+                .sha
+                .get(..7)
+                .unwrap_or(commit.sha.as_ref())
+                .to_string()
+                .into()
+        });
+        let subject = commit.map(|commit| commit.subject.clone());
+        let tag = self.head_description.as_ref().map(|description| {
+            if description.distance == 0 {
+                description.tag.to_string()
+            } else {
+                format!("{} ({})", description.tag, description.distance)
+            }
+        });
+
+        Some(
+            v_flex()
+                .w_full()
+                .flex_none()
+                .px_2()
+                .py_1()
+                .gap_0p5()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Label::new("Head:")
+                                .color(Color::Muted)
+                                .size(LabelSize::Small),
+                        )
+                        .child(
+                            Label::new(branch.name().to_string())
+                                .color(Color::Accent)
+                                .size(LabelSize::Small),
+                        )
+                        .children(
+                            short_sha.map(|sha| {
+                                Label::new(sha).color(Color::Muted).size(LabelSize::Small)
+                            }),
+                        )
+                        .children(subject.map(|subject| {
+                            Label::new(subject)
+                                .color(Color::Default)
+                                .size(LabelSize::Small)
+                                .truncate()
+                        })),
+                )
+                .children(tag.map(|tag| {
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Label::new("Tag:")
+                                .color(Color::Muted)
+                                .size(LabelSize::Small),
+                        )
+                        .child(Label::new(tag).color(Color::Accent).size(LabelSize::Small))
+                })),
         )
     }
 
@@ -7538,9 +7802,7 @@ impl GitPanel {
         let selected = self.selected_entry == Some(ix);
         // A file inside the active visual selection is highlighted like a marked
         // entry, so the whole range reads as one block.
-        let in_visual_range = self
-            .visual_range()
-            .is_some_and(|range| range.contains(&ix));
+        let in_visual_range = self.visual_range().is_some_and(|range| range.contains(&ix));
         let marked = self.marked_entries.contains(&ix) || in_visual_range;
         let status_style = settings.status_style;
         let status = entry.status;
@@ -8270,6 +8532,10 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::select_branch))
             .on_action(cx.listener(Self::create_branch))
             .on_action(cx.listener(Self::pull_popup))
+            .on_action(cx.listener(Self::push_popup))
+            .on_action(cx.listener(Self::stash_popup))
+            .on_action(cx.listener(Self::reset_popup))
+            .on_action(cx.listener(Self::rebase_popup))
             .on_action(cx.listener(Self::toggle_visual_selection))
             .on_action(cx.listener(Self::cancel_visual_selection))
             .on_action(cx.listener(Self::expand_commit_editor))
@@ -8298,6 +8564,7 @@ impl Render for GitPanel {
                     })
                     .map(|this| match self.active_tab {
                         GitPanelTab::Changes => this
+                            .children(self.render_head_header(cx))
                             .children(self.render_changes_header(window, cx))
                             .when(!self.commit_editor_expanded, |this| {
                                 this.map(|this| {
@@ -12395,6 +12662,108 @@ mod tests {
             !changes_list_focused,
             "minibuffer content should take focus from the changes list"
         );
+    }
+
+    #[gpui::test]
+    async fn test_transients_open_in_minibuffer(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "tracked": "tracked\n",
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let panel = workspace.update_in(cx, GitPanel::new);
+
+        let transients: [(&str, fn(&mut GitPanel, &mut Window, &mut Context<GitPanel>)); 4] = [
+            ("push", |panel, window, cx| {
+                panel.push_popup(&PushPopup, window, cx)
+            }),
+            ("stash", |panel, window, cx| {
+                panel.stash_popup(&StashPopup, window, cx)
+            }),
+            ("reset", |panel, window, cx| {
+                panel.reset_popup(&ResetPopup, window, cx)
+            }),
+            ("rebase", |panel, window, cx| {
+                panel.rebase_popup(&RebasePopup, window, cx)
+            }),
+        ];
+
+        for (name, open) in transients {
+            panel.update_in(cx, |panel, window, cx| {
+                panel.focus_handle.focus(window, cx);
+                open(panel, window, cx);
+            });
+            cx.run_until_parked();
+
+            workspace.read_with(cx, |workspace, _| {
+                assert!(
+                    workspace.bottom_panel().is_some(),
+                    "{name} transient should be shown in the minibuffer"
+                );
+            });
+
+            workspace.update_in(cx, |workspace, _, cx| workspace.clear_bottom_panel(cx));
+        }
+    }
+
+    #[gpui::test]
+    async fn test_hard_reset_asks_for_confirmation(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "tracked": "tracked\n",
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let panel = workspace.update_in(cx, GitPanel::new);
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.reset_to("HEAD".to_string(), ResetMode::Mixed, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            !cx.has_pending_prompt(),
+            "a mixed reset leaves the working tree alone and shouldn't prompt"
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.reset_to("HEAD".to_string(), ResetMode::Hard, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.has_pending_prompt(),
+            "a hard reset discards changes and should ask first"
+        );
+
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
     }
 
     #[gpui::test]

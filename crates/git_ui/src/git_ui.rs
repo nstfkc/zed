@@ -46,8 +46,8 @@ mod conflict_view;
 pub mod created_worktrees;
 mod diff_multibuffer;
 pub mod file_diff_view;
-pub mod git_graph;
 pub mod git_branch_status;
+pub mod git_graph;
 pub mod git_panel;
 mod git_panel_settings;
 pub mod git_picker;
@@ -56,20 +56,25 @@ pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
 pub mod pull_popup;
+pub mod push_popup;
+pub mod rebase_popup;
 pub(crate) mod remote_output;
 pub mod repository_selector;
+pub mod reset_popup;
 pub mod solo_diff_view;
 pub mod staged_diff;
 pub mod stash_picker;
+pub mod stash_popup;
 pub mod text_diff_view;
+pub(crate) mod transient;
 pub mod unstaged_diff;
 pub mod worktree_names;
 pub mod worktree_picker;
 pub mod worktree_service;
 
 pub use blame_ui::GitBlameStatus;
-pub use git_branch_status::GitBranchStatus;
 pub use conflict_view::MergeConflictIndicator;
+pub use git_branch_status::GitBranchStatus;
 
 pub fn get_provider_icon(name: &str) -> IconName {
     match name {
