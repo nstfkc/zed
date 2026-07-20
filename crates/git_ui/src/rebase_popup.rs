@@ -26,6 +26,9 @@ actions!(
         ToggleAutosquash,
         /// Rebases the current branch onto its upstream.
         RebaseOntoUpstream,
+        /// Autosquash-rebases the current branch onto its upstream, applying
+        /// fixup!/squash! commits without opening an editor.
+        RebaseAutosquashOntoUpstream,
         /// Rebases the current branch onto a branch picked from a list.
         RebaseOntoElsewhere,
         /// Continues an in-progress rebase.
@@ -131,6 +134,19 @@ impl RebasePopup {
         self.run(RebaseAction::Onto(upstream.to_string()), window, cx);
     }
 
+    fn autosquash_onto_upstream(
+        &mut self,
+        _: &RebaseAutosquashOntoUpstream,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(upstream) = self.upstream.clone() else {
+            return;
+        };
+        self.args.autosquash = true;
+        self.run(RebaseAction::Onto(upstream.to_string()), window, cx);
+    }
+
     fn onto_elsewhere(
         &mut self,
         _: &RebaseOntoElsewhere,
@@ -199,6 +215,7 @@ impl Render for RebasePopup {
             .on_action(cx.listener(Self::toggle_autostash))
             .on_action(cx.listener(Self::toggle_autosquash))
             .on_action(cx.listener(Self::onto_upstream))
+            .on_action(cx.listener(Self::autosquash_onto_upstream))
             .on_action(cx.listener(Self::onto_elsewhere))
             .on_action(cx.listener(Self::continue_rebase))
             .on_action(cx.listener(Self::skip))
@@ -229,6 +246,7 @@ impl Render for RebasePopup {
                     .child(Label::new("onto").color(Color::Muted)),
             )
             .child(render_action("u", upstream))
+            .child(render_action("f", "upstream (autosquash)"))
             .child(render_action("e", "elsewhere"))
             .child(div().h_2())
             .child(render_section("In progress"))

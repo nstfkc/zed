@@ -1211,6 +1211,7 @@
       "- a": "git_rebase_popup::ToggleAutostash",
       "- s": "git_rebase_popup::ToggleAutosquash",
       "u": "git_rebase_popup::RebaseOntoUpstream",
+      "f": "git_rebase_popup::RebaseAutosquashOntoUpstream",
       "e": "git_rebase_popup::RebaseOntoElsewhere",
       "r": "git_rebase_popup::RebaseContinue",
       "s": "git_rebase_popup::RebaseSkip",
