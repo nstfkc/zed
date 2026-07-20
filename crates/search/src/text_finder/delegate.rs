@@ -203,7 +203,7 @@ async fn stream_plunder_to_picker(
                 .extend(new_matches.iter().map(|m| m.path.clone()));
             delegate.matches.extend(new_matches);
             delegate.rebuild_entries();
-            cx.notify();
+            picker.sync_streamed_matches(cx);
             ControlFlow::Continue(())
         });
 
@@ -1267,7 +1267,7 @@ async fn stream_results_to_picker(
                 // selectable row (the header/separator rows are not selectable).
                 delegate.rebuild_entries();
 
-                cx.notify();
+                picker.sync_streamed_matches(cx);
             })
             .log_err();
 

@@ -634,6 +634,73 @@ mod tests {
         });
     }
 
+    /// Typing into the minibuffer text finder must list matches live: the
+    /// picker uses a variable-height `gpui::list`, whose row count only reflects
+    /// the delegate's matches when the picker resyncs its `ListState`. If the
+    /// streaming search only calls `cx.notify()`, the appended rows stay
+    /// invisible until the search finishes, so an ongoing search looks empty.
+    #[gpui::test]
+    async fn test_minibuffer_lists_streamed_matches_live(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/dir"), json!({"one.rs": "const ONE: usize = 1;"}))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        // Dispatch the action the way `space /` does.
+        workspace.update_in(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(OpenInMinibuffer), cx);
+        });
+        cx.run_until_parked();
+
+        let finder = workspace
+            .update(cx, |workspace, cx| {
+                minibuffer::shown_content::<TextFinder>(workspace, cx)
+            })
+            .expect("text finder should be shown in the minibuffer");
+        let picker = finder.read_with(cx, |finder, _| finder.picker.clone());
+
+        // Record the (grouped-entry count, rendered-row count) on every picker
+        // notification so we can catch any point where matches exist but the
+        // list still renders none of them.
+        let samples: std::rc::Rc<std::cell::RefCell<Vec<(usize, usize)>>> = Default::default();
+        let subscription = cx.update(|_, cx| {
+            cx.observe(&picker, {
+                let samples = samples.clone();
+                move |picker, cx| {
+                    let picker = picker.read(cx);
+                    samples
+                        .borrow_mut()
+                        .push((picker.delegate.entries.len(), picker.rendered_item_count()));
+                }
+            })
+        });
+
+        cx.simulate_input("ONE");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(150));
+        cx.run_until_parked();
+        drop(subscription);
+
+        let samples = samples.borrow();
+        assert!(
+            samples.iter().any(|&(entries, _)| entries > 0),
+            "search should have produced matches, got samples: {samples:?}"
+        );
+        assert!(
+            samples
+                .iter()
+                .all(|&(entries, rendered)| rendered == entries),
+            "every notification with matches must render them, got samples: {samples:?}"
+        );
+    }
+
     #[gpui::test]
     async fn test_open_in_minibuffer(cx: &mut TestAppContext) {
         init_test(cx);
