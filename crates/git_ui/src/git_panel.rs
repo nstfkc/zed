@@ -3106,6 +3106,86 @@ impl GitPanel {
         .detach_and_log_err(cx);
     }
 
+    /// Restores the index and/or working tree to `revision`, leaving the branch
+    /// pointer alone. This backs the index-only ("i") and worktree-only ("w")
+    /// variants of the reset transient, as well as the single-file ("f") variant
+    /// via `restore_selected_file_to`.
+    pub(crate) fn restore_to(
+        &mut self,
+        revision: String,
+        staged: bool,
+        worktree: bool,
+        paths: Vec<RepoPath>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        if !staged && !worktree {
+            return;
+        }
+
+        // Restoring the working tree throws away uncommitted changes with no way
+        // to get them back, so it is confirmed like a hard reset. Restoring only
+        // the index leaves the working tree alone and runs straight away.
+        let confirmation = if worktree {
+            let prompt = window.prompt(
+                PromptLevel::Warning,
+                &format!(
+                    "Are you sure you want to restore the working tree to {}?",
+                    MarkdownInlineCode(&revision)
+                ),
+                Some("Matching changes in the working tree will be discarded."),
+                &["Discard Changes", "Cancel"],
+                cx,
+            );
+            cx.background_spawn(prompt)
+        } else {
+            Task::ready(Ok(0))
+        };
+
+        cx.spawn(async move |this, cx| {
+            if confirmation.await? != 0 {
+                return anyhow::Ok(());
+            }
+            let restore_task = active_repository
+                .update(cx, |repo, cx| {
+                    repo.restore(revision, staged, worktree, paths, cx)
+                })
+                .await?;
+            this.update(cx, |this, cx| {
+                restore_task
+                    .map_err(|e| {
+                        this.show_error_toast("restore", e, cx);
+                    })
+                    .ok();
+                cx.notify();
+            })?;
+            Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
+    /// Restores the currently selected file (index and working tree) to
+    /// `revision`. No-ops gracefully when no file is selected.
+    pub(crate) fn restore_selected_file_to(
+        &mut self,
+        revision: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo_path) = self
+            .selected_entry
+            .and_then(|index| self.entries.get(index))
+            .and_then(|entry| entry.status_entry())
+            .map(|entry| entry.repo_path.clone())
+        else {
+            return;
+        };
+        self.restore_to(revision, true, true, vec![repo_path], window, cx);
+    }
+
     pub(crate) fn rebase(
         &mut self,
         action: RebaseAction,
