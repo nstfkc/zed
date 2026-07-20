@@ -628,6 +628,7 @@ pub struct Remote {
     pub name: SharedString,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetMode {
     /// Reset the branch pointer, leave index and worktree unchanged (this will make it look like things that were
     /// committed are now staged).
