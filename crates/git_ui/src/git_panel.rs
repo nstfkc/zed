@@ -34,7 +34,7 @@ use git::repository::{
     PullArgs, PushArgs, PushOptions, RebaseAction, RebaseArgs, Remote, RemoteCommandOutput,
     ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus, get_git_committer,
 };
-use git::stash::{GitStash, StashPushKind};
+use git::stash::{GitStash, StashEntry, StashPushKind};
 use git::status::{DiffStat, StageStatus};
 use git::{Amend, Commit, Signoff, ToggleStaged, repository::RepoPath, status::FileStatus};
 use git::{
@@ -105,6 +105,8 @@ const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
 // TODO: We should revise this part. It seems the indentation width is not aligned with the one in project panel
 const TREE_INDENT: f32 = 16.0;
 const MAX_HISTORY_TAG_CHIPS: usize = 3;
+// Number of commits shown in the "Recent commits" section of the changes view.
+const MAX_RECENT_COMMITS: usize = 5;
 // Horizontal offset that aligns the tree indent guides with the row icon column.
 const INDENT_GUIDE_LEFT_OFFSET: gpui::Pixels = gpui::px(19.);
 
@@ -1060,6 +1062,10 @@ pub struct GitPanel {
     commit_template: Option<GitCommitTemplate>,
     bulk_staging: Option<BulkStaging>,
     stash_entries: GitStash,
+    /// Whether the Stashes section in the changes view is expanded.
+    stashes_expanded: bool,
+    /// Whether the Recent commits section in the changes view is expanded.
+    recent_commits_expanded: bool,
     active_tab: GitPanelTab,
     commit_history_scroll_handle: UniformListScrollHandle,
     commit_history: CommitHistory,
@@ -1383,6 +1389,8 @@ impl GitPanel {
                 entry_count: 0,
                 bulk_staging: None,
                 stash_entries: Default::default(),
+                stashes_expanded: true,
+                recent_commits_expanded: true,
                 active_tab: GitPanelTab::Changes,
                 commit_history_scroll_handle: UniformListScrollHandle::new(),
                 commit_history: CommitHistory::Loading,
@@ -3004,6 +3012,60 @@ impl GitPanel {
                     cx.notify();
                 })
             }
+        })
+        .detach();
+    }
+
+    fn pop_stash_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let stash_task = active_repository
+                .update(cx, |repo, cx| repo.stash_pop(Some(index), cx))
+                .await;
+            this.update(cx, |this, cx| {
+                stash_task
+                    .map_err(|e| this.show_error_toast("stash pop", e, cx))
+                    .ok();
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
+    fn apply_stash_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let stash_task = active_repository
+                .update(cx, |repo, cx| repo.stash_apply(Some(index), cx))
+                .await;
+            this.update(cx, |this, cx| {
+                stash_task
+                    .map_err(|e| this.show_error_toast("stash apply", e, cx))
+                    .ok();
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
+    fn drop_stash_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let stash_task = active_repository
+                .update(cx, |repo, cx| repo.stash_drop(Some(index), cx))
+                .await?;
+            this.update(cx, |this, cx| {
+                stash_task
+                    .map_err(|e| this.show_error_toast("stash drop", e, cx))
+                    .ok();
+                cx.notify();
+            })
         })
         .detach();
     }
@@ -4939,17 +5001,16 @@ impl GitPanel {
             }
             self.git_access = None;
             self._repo_subscriptions.clear();
-            if self.active_tab == GitPanelTab::History {
-                self.set_commit_history(CommitHistory::Loading, cx);
-            }
+            // The commit history feeds both the History tab and the Recent
+            // commits section of the changes view, so reset and reload it
+            // regardless of the active tab.
+            self.set_commit_history(CommitHistory::Loading, cx);
         }
         self.active_repository = new_active_repository;
         self.refresh_head_description(cx);
         self.reopen_commit_buffer(window, cx);
         self.preload_commit_history(cx);
-        if self.active_tab == GitPanelTab::History {
-            self.load_commit_history(cx);
-        }
+        self.load_commit_history(cx);
         self.update_visible_entries_task = cx.spawn_in(window, async move |_, cx| {
             cx.background_executor().timer(UPDATE_DEBOUNCE).await;
             if let Some(git_panel) = handle.upgrade() {
@@ -6933,17 +6994,10 @@ impl GitPanel {
             return;
         }
         self.active_tab = tab;
-        match tab {
-            GitPanelTab::History => {
-                self.focus_handle.focus(window, cx);
-                self.load_commit_history(cx);
-            }
-            GitPanelTab::Changes => {
-                self.focus_handle.focus(window, cx);
-                self.set_commit_history(CommitHistory::Loading, cx);
-                self._repo_subscriptions.clear();
-            }
-        }
+        // The commit history backs both the History tab and the Recent commits
+        // section of the changes view, so keep it loaded when switching tabs.
+        self.focus_handle.focus(window, cx);
+        self.load_commit_history(cx);
         cx.notify();
     }
 
@@ -6974,9 +7028,7 @@ impl GitPanel {
                 &active_repository,
                 |this, _repo, event, cx| {
                     if let RepositoryEvent::GraphEvent(_, _) = event {
-                        if this.active_tab == GitPanelTab::History {
-                            this.fetch_commit_history_entries(cx);
-                        }
+                        this.fetch_commit_history_entries(cx);
                     }
                 },
             ));
@@ -7333,6 +7385,243 @@ impl GitPanel {
                 )
                 .vertical_scrollbar_for(&commit_history_scroll_handle, window, cx),
         )
+    }
+
+    /// Renders a Magit-style collapsible section header (chevron + title + count)
+    /// used by the Stashes and Recent commits sections of the changes view.
+    fn render_section_header(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        count: usize,
+        expanded: bool,
+        on_toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .id(id)
+            .w_full()
+            .h(self.list_item_height())
+            .px_2p5()
+            .gap_1p5()
+            .cursor_pointer()
+            .hover(|s| s.bg(cx.theme().colors().ghost_element_hover))
+            .child(Icon::new(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size(IconSize::Small)
+            .color(Color::Muted))
+            .child(Label::new(title))
+            .child(
+                Label::new(format!("({count})"))
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| on_toggle(this, window, cx)))
+    }
+
+    fn render_stashes_section(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let stashes = self.stash_entries.entries.clone();
+        if stashes.is_empty() {
+            return None;
+        }
+        let expanded = self.stashes_expanded;
+        let header = self.render_section_header(
+            "git-stashes-section",
+            "Stashes",
+            stashes.len(),
+            expanded,
+            |this, _window, cx| {
+                this.stashes_expanded = !this.stashes_expanded;
+                cx.notify();
+            },
+            cx,
+        );
+
+        let rows = expanded.then(|| {
+            v_flex().children(
+                stashes
+                    .iter()
+                    .map(|entry| self.render_stash_row(entry, cx).into_any_element()),
+            )
+        });
+
+        Some(v_flex().flex_shrink_0().child(header).children(rows))
+    }
+
+    fn render_stash_row(&self, entry: &StashEntry, cx: &Context<Self>) -> impl IntoElement {
+        let index = entry.index;
+        let name = format!("stash@{{{index}}}");
+        let message: SharedString = entry.message.clone().into();
+        let branch = entry.branch.clone();
+
+        h_flex()
+            .id(("stash-row", index))
+            .group("stash-row")
+            .w_full()
+            .h(self.list_item_height())
+            .pl_6()
+            .pr_2()
+            .gap_1p5()
+            .justify_between()
+            .hover(|s| s.bg(cx.theme().colors().ghost_element_hover))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .min_w_0()
+                    .child(
+                        Label::new(name)
+                            .size(LabelSize::Small)
+                            .color(Color::Accent),
+                    )
+                    .when_some(branch, |this, branch| {
+                        this.child(Chip::new(branch))
+                    })
+                    .child(Label::new(message).size(LabelSize::Small).truncate()),
+            )
+            .child(
+                h_flex()
+                    .gap_0p5()
+                    .visible_on_hover("stash-row")
+                    .child(
+                        IconButton::new(("stash-apply", index), IconName::Check)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Apply Stash"))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.apply_stash_at(index, cx);
+                            })),
+                    )
+                    .child(
+                        IconButton::new(("stash-pop", index), IconName::MaximizeAlt)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Pop Stash"))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.pop_stash_at(index, cx);
+                            })),
+                    )
+                    .child(
+                        IconButton::new(("stash-drop", index), IconName::Trash)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Drop Stash"))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.drop_stash_at(index, cx);
+                            })),
+                    ),
+            )
+    }
+
+    fn render_recent_commits_section(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let CommitHistory::Loaded(entries) = &self.commit_history else {
+            return None;
+        };
+        if entries.is_empty() {
+            return None;
+        }
+        let active_repository = self.active_repository.as_ref()?;
+        let repo_weak = active_repository.downgrade();
+        let workspace = self.workspace.clone();
+        let expanded = self.recent_commits_expanded;
+
+        let count = entries.len().min(MAX_RECENT_COMMITS);
+        let shown = entries[..count].to_vec();
+
+        // Resolve the mutable repository borrow (to fetch cached commit subjects)
+        // before building the header, so the header's immutable borrow of `cx`
+        // does not overlap with it.
+        let commit_data: Vec<Option<Arc<CommitData>>> = if expanded {
+            repo_weak
+                .update(cx, |repository, cx| {
+                    shown
+                        .iter()
+                        .map(|entry| match repository.fetch_commit_data(entry.sha, false, cx) {
+                            CommitDataState::Loaded(data) => Some(data.clone()),
+                            CommitDataState::Loading(_) => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let header = self.render_section_header(
+            "git-recent-commits-section",
+            "Recent commits",
+            count,
+            expanded,
+            |this, _window, cx| {
+                this.recent_commits_expanded = !this.recent_commits_expanded;
+                cx.notify();
+            },
+            cx,
+        );
+
+        let rows = expanded.then(|| {
+            v_flex().children(shown.iter().enumerate().zip(commit_data).map(
+                |((index, entry), data)| {
+                    self.render_recent_commit_row(index, entry, data, &repo_weak, &workspace, cx)
+                        .into_any_element()
+                },
+            ))
+        });
+
+        Some(v_flex().flex_shrink_0().child(header).children(rows))
+    }
+
+    fn render_recent_commit_row(
+        &self,
+        index: usize,
+        entry: &CommitHistoryEntry,
+        data: Option<Arc<CommitData>>,
+        repo_weak: &WeakEntity<Repository>,
+        workspace: &WeakEntity<Workspace>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let sha_string = entry.sha.to_string();
+        let short_sha: SharedString = sha_string[..7.min(sha_string.len())].to_string().into();
+        let subject: SharedString = data
+            .as_ref()
+            .map(|data| data.subject.clone())
+            .unwrap_or_else(|| "Loading…".into());
+        let tag_names = entry.tag_names.clone();
+        let repo = repo_weak.clone();
+        let workspace = workspace.clone();
+
+        h_flex()
+            .id(("recent-commit-row", index))
+            .w_full()
+            .h(self.list_item_height())
+            .pl_6()
+            .pr_2()
+            .gap_1p5()
+            .cursor_pointer()
+            .hover(|s| s.bg(cx.theme().colors().ghost_element_hover))
+            .child(
+                Label::new(short_sha)
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+            .child(Label::new(subject).size(LabelSize::Small).truncate())
+            .children(tag_names.iter().take(MAX_HISTORY_TAG_CHIPS).map(|tag_name| {
+                Chip::new(tag_name.clone()).truncate()
+            }))
+            .on_click(move |_, window, cx| {
+                CommitView::open(
+                    sha_string.clone(),
+                    repo.clone(),
+                    workspace.clone(),
+                    None,
+                    None,
+                    window,
+                    cx,
+                );
+            })
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -8671,6 +8960,10 @@ impl Render for GitPanel {
                                         this.child(self.render_empty_state(cx).into_any_element())
                                     }
                                 })
+                            })
+                            .when(!self.commit_editor_expanded, |this| {
+                                this.children(self.render_stashes_section(cx))
+                                    .children(self.render_recent_commits_section(window, cx))
                             })
                             .when(!self.full_screen || self.commit_editor_revealed, |this| {
                                 this.children(self.render_footer(window, cx))
