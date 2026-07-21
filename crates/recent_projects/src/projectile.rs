@@ -5,7 +5,9 @@ use gpui::{
     App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, KeyContext, Render,
     Task, TaskExt, Window, actions,
 };
+use open_path_prompt::OpenPathDelegate;
 use picker::{Picker, PickerDelegate};
+use project::DirectoryLister;
 use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
 use workspace::{
     AppState, ModalView, OpenOptions, WorkspaceDb, WorkspaceId, with_active_or_new_workspace,
@@ -13,7 +15,7 @@ use workspace::{
 
 use crate::{
     RecentProjectEntry, RecentProjects, default_open_in_new_window, delete_recent_project,
-    get_recent_projects, open_local_project,
+    get_recent_projects, open_paths_as_project,
 };
 
 actions!(
@@ -38,11 +40,70 @@ pub fn init(cx: &mut App) {
 }
 
 fn add_project(cx: &mut App) {
-    with_active_or_new_workspace(cx, |_workspace, window, cx| {
+    with_active_or_new_workspace(cx, |workspace, window, cx| {
         let handle = cx.entity().downgrade();
         let create_new_window = default_open_in_new_window(cx);
-        open_local_project(handle, create_new_window, window, cx);
+        let lister = DirectoryLister::Local(
+            workspace.project().clone(),
+            workspace.app_state().fs.clone(),
+        );
+        // Pick the folder in the minibuffer rather than the OS file dialog. Tab
+        // descends into a directory, Enter selects the highlighted one, and the
+        // chosen path is then opened as a project.
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let picker = cx.new(|cx| AddProjectPicker::new(lister, tx, window, cx));
+        minibuffer::show(workspace, picker, window, cx);
+        open_paths_as_project(handle, create_new_window, rx, window, cx);
     });
+}
+
+/// Minibuffer host for the folder picker used by [`AddProject`]. Wraps an
+/// [`OpenPathDelegate`] picker (the same directory browser the open-path prompt
+/// uses) so it can be shown in the minibuffer instead of a centered modal.
+struct AddProjectPicker {
+    picker: Entity<Picker<OpenPathDelegate>>,
+    focus_handle: FocusHandle,
+}
+
+impl AddProjectPicker {
+    fn new(
+        lister: DirectoryLister,
+        tx: futures::channel::oneshot::Sender<Option<Vec<std::path::PathBuf>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let delegate = OpenPathDelegate::new(tx, lister.clone(), false, cx).show_hidden();
+        let picker =
+            cx.new(|cx| Picker::uniform_list(delegate, window, cx).embedded().full_width());
+        picker.update(cx, |picker, cx| {
+            let query = lister.default_query(cx);
+            picker.set_query(&query, window, cx);
+        });
+        cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| cx.emit(DismissEvent))
+            .detach();
+        let focus_handle = picker.focus_handle(cx);
+        Self {
+            picker,
+            focus_handle,
+        }
+    }
+}
+
+impl ModalView for AddProjectPicker {}
+impl EventEmitter<DismissEvent> for AddProjectPicker {}
+
+impl Focusable for AddProjectPicker {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for AddProjectPicker {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut key_context = KeyContext::new_with_defaults();
+        key_context.add("AddProjectPicker");
+        v_flex().key_context(key_context).child(self.picker.clone())
+    }
 }
 
 fn open_project(cx: &mut App) {

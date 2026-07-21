@@ -15074,6 +15074,7 @@ dependencies = [
  "language",
  "log",
  "menu",
+ "minibuffer",
  "node_runtime",
  "open_path_prompt",
  "ordered-float 2.10.1",

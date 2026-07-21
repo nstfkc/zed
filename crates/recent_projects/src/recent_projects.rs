@@ -2117,6 +2117,23 @@ fn open_local_project(
         )
     });
 
+    open_paths_as_project(workspace.downgrade(), create_new_window, paths, window, cx);
+}
+
+/// Opens the paths produced by a path prompt as a project: activating them in
+/// the current multi-workspace window when `create_new_window` is false, or
+/// otherwise opening them in a new window. Shared by the OS/in-app path prompt
+/// (`open_local_project`) and the minibuffer folder picker used by `projectile`.
+pub(crate) fn open_paths_as_project(
+    workspace: WeakEntity<Workspace>,
+    create_new_window: bool,
+    paths: futures::channel::oneshot::Receiver<Option<Vec<PathBuf>>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(workspace) = workspace.upgrade() else {
+        return;
+    };
     let multi_workspace_handle = window.window_handle().downcast::<MultiWorkspace>();
     window
         .spawn(cx, async move |cx| {
