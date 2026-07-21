@@ -793,6 +793,36 @@ pub fn hover_markdown_at(
     })
 }
 
+/// Builds the same rendered markdown the diagnostic hover popover shows for the
+/// diagnostic under `anchor`, for callers that want to display it somewhere
+/// other than the floating popover (e.g. the vim minibuffer). Returns `None`
+/// when there is no diagnostic at that position.
+pub fn diagnostics_markdown_at(
+    editor: &mut Editor,
+    anchor: Anchor,
+    cx: &mut Context<Editor>,
+) -> Option<Entity<Markdown>> {
+    let snapshot = editor.buffer.read(cx).snapshot(cx);
+    let offset = anchor.to_offset(&snapshot);
+    let language_registry = editor
+        .project()
+        .map(|project| project.read(cx).languages().clone());
+
+    // Prefer the most specific (smallest-range) diagnostic covering the cursor.
+    let (buffer_id, local_diagnostic) = snapshot
+        .diagnostics_with_buffer_ids_in_range::<MultiBufferOffset>(offset..offset)
+        .min_by_key(|(_, entry)| entry.range.end - entry.range.start)?;
+
+    let group = snapshot
+        .diagnostic_group(buffer_id, local_diagnostic.diagnostic.group_id)
+        .collect::<Vec<_>>();
+    let point_range = local_diagnostic.range.start.to_point(&snapshot)
+        ..local_diagnostic.range.end.to_point(&snapshot);
+
+    let renderer = GlobalDiagnosticRenderer::global(cx)?;
+    renderer.render_hover(group, point_range, buffer_id, language_registry, cx)
+}
+
 pub fn diagnostics_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
     let settings = ThemeSettings::get_global(cx);
     let ui_font_family = settings.ui_font.family.clone();

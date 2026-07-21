@@ -94,6 +94,8 @@ actions!(
         ShowLocation,
         /// Shows the hover information for the symbol under the cursor in the minibuffer.
         ShowHover,
+        /// Shows the diagnostic under the cursor in the minibuffer.
+        ShowDiagnostic,
         /// Undoes the last change.
         Undo,
         /// Redoes the last undone change.
@@ -228,6 +230,12 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         Vim::take_count(cx);
         Vim::take_forced_motion(cx);
         vim.show_hover(window, cx);
+    });
+
+    Vim::action(editor, cx, |vim, _: &ShowDiagnostic, window, cx| {
+        Vim::take_count(cx);
+        Vim::take_forced_motion(cx);
+        vim.show_diagnostic(window, cx);
     });
 
     Vim::action(editor, cx, |vim, _: &GoToPreviousReference, window, cx| {
@@ -1068,6 +1076,26 @@ impl Vim {
             .ok();
         })
         .detach();
+    }
+
+    fn show_diagnostic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let markdown = self
+            .update_editor(cx, |_, editor, cx| {
+                let anchor = editor.selections.newest_anchor().head();
+                editor::hover_popover::diagnostics_markdown_at(editor, anchor, cx)
+            })
+            .flatten();
+        let Some(workspace) = self.workspace(window, cx) else {
+            return;
+        };
+        let workspace_handle = workspace.downgrade();
+        let markdown = markdown.unwrap_or_else(|| {
+            cx.new(|cx| markdown::Markdown::new("No diagnostics on this line".into(), None, None, cx))
+        });
+        let view = cx.new(|cx| crate::hover::HoverView::new(Some(markdown), workspace_handle, cx));
+        workspace.update(cx, |workspace, cx| {
+            minibuffer::show(workspace, view, window, cx);
+        });
     }
 
     fn toggle_comments(&mut self, _: &ToggleComments, window: &mut Window, cx: &mut Context<Self>) {
