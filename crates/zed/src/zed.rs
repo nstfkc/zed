@@ -612,6 +612,13 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let active_toolchain_language =
             cx.new(|cx| toolchain_selector::ActiveToolchain::new(workspace, window, cx));
         let vim_mode_indicator = cx.new(|cx| vim::ModeIndicator::new(window, cx));
+        let vim_command_line = cx.new(|_cx| vim::VimCommandLine::new(workspace.weak_handle()));
+        workspace.register_action({
+            let vim_command_line = vim_command_line.clone();
+            move |_, _: &vim::OpenCommandLine, window, cx| {
+                vim_command_line.update(cx, |command_line, cx| command_line.toggle(window, cx));
+            }
+        });
         let image_info = cx.new(|_cx| ImageInfo::new(workspace));
 
         let lsp_button_menu_handle = PopoverMenuHandle::default();
@@ -650,6 +657,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 &image_info,
             );
             status_bar.add_left_item(vim_mode_indicator, window, cx);
+            status_bar.add_left_item(vim_command_line, window, cx);
             status_bar.add_right_item(diagnostic_summary, window, cx);
             status_bar.add_right_item(git_branch_status, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);

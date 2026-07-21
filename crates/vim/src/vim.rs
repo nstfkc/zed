@@ -5,6 +5,7 @@ mod test;
 
 mod change_list;
 mod command;
+mod command_line;
 mod digraph;
 mod helix;
 mod hover;
@@ -35,6 +36,7 @@ use gpui::{
 };
 use insert::{NormalBefore, TemporaryNormal};
 use language::{CursorShape, Point, Selection, SelectionGoal, TransactionId};
+pub use command_line::{OpenCommandLine, VimCommandLine};
 pub use mode_indicator::ModeIndicator;
 use motion::Motion;
 use multi_buffer::ToPoint as _;
