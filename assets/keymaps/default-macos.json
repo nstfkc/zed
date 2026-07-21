@@ -509,6 +509,14 @@
     },
   },
   {
+    "context": "VimCommandLine",
+    "use_key_equivalents": true,
+    "bindings": {
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel",
+    },
+  },
+  {
     "context": "ProjectSearchBar && in_replace > Editor",
     "use_key_equivalents": true,
     "bindings": {
