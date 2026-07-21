@@ -62,7 +62,8 @@ use project::git_store::GitAccess;
 use project::{
     Fs, Project, ProjectPath,
     git_store::{
-        CommitDataState, GitStoreEvent, Repository, RepositoryEvent, RepositoryId, pending_op,
+        CommitDataState, GitStoreEvent, RemoteOperationKind, RemoteOperationResult, Repository,
+        RepositoryEvent, RepositoryId, pending_op,
     },
     project_settings::{GitPathStyle, ProjectSettings},
 };
@@ -382,15 +383,6 @@ fn git_panel_view_options_menu(
                     })
             })
     })
-}
-
-// We only allow a single remote operation at a time to avoid concurrent
-// credential prompts and competing ref/working-tree updates.
-#[derive(Clone, Copy)]
-pub(crate) enum RemoteOperationKind {
-    Fetch,
-    Pull,
-    Push,
 }
 
 pub fn register(workspace: &mut Workspace) {
@@ -4203,6 +4195,11 @@ impl GitPanel {
                         FetchOptions::All => RemoteAction::Fetch(None),
                         FetchOptions::Remote(remote) => RemoteAction::Fetch(Some(remote)),
                     };
+                    this.finish_remote_operation(
+                        RemoteOperationKind::Fetch,
+                        remote_message.is_err(),
+                        cx,
+                    );
                     match remote_message {
                         Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
                         Err(e) => {
@@ -4363,11 +4360,18 @@ impl GitPanel {
             let remote_message = pull.await?;
 
             let action = RemoteAction::Pull(remote);
-            this.update(cx, |this, cx| match remote_message {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
-                Err(e) => {
-                    log::error!("Error while pulling {:?}", e);
-                    this.show_error_toast(action.name(), e, cx)
+            this.update(cx, |this, cx| {
+                this.finish_remote_operation(
+                    RemoteOperationKind::Pull,
+                    remote_message.is_err(),
+                    cx,
+                );
+                match remote_message {
+                    Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+                    Err(e) => {
+                        log::error!("Error while pulling {:?}", e);
+                        this.show_error_toast(action.name(), e, cx)
+                    }
                 }
             })
             .ok();
@@ -4479,11 +4483,18 @@ impl GitPanel {
             let remote_output = push.await?;
 
             let action = RemoteAction::Push(branch.name().to_owned().into(), remote);
-            this.update(cx, |this, cx| match remote_output {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
-                Err(e) => {
-                    log::error!("Error while pushing {:?}", e);
-                    this.show_error_toast(action.name(), e, cx)
+            this.update(cx, |this, cx| {
+                this.finish_remote_operation(
+                    RemoteOperationKind::Push,
+                    remote_output.is_err(),
+                    cx,
+                );
+                match remote_output {
+                    Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+                    Err(e) => {
+                        log::error!("Error while pushing {:?}", e);
+                        this.show_error_toast(action.name(), e, cx)
+                    }
                 }
             })?;
 
@@ -4619,12 +4630,34 @@ impl GitPanel {
         }
 
         self.pending_remote_operation = Some(kind);
+        let git_store = self.project.read(cx).git_store().clone();
+        git_store.update(cx, |git_store, cx| {
+            git_store.start_remote_operation(kind, cx);
+        });
         cx.notify();
         true
     }
 
+    /// Records a finished remote operation's result on the git store so the
+    /// status bar can surface it.
+    fn finish_remote_operation(
+        &mut self,
+        kind: RemoteOperationKind,
+        is_error: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let git_store = self.project.read(cx).git_store().clone();
+        git_store.update(cx, |git_store, cx| {
+            git_store.finish_remote_operation(RemoteOperationResult { kind, is_error }, cx);
+        });
+    }
+
     fn clear_remote_operation(&mut self, cx: &mut Context<Self>) {
         self.pending_remote_operation.take();
+        let git_store = self.project.read(cx).git_store().clone();
+        git_store.update(cx, |git_store, cx| {
+            git_store.abort_remote_operation(cx);
+        });
         cx.notify();
     }
 
