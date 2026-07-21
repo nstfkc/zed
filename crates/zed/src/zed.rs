@@ -636,6 +636,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
         let git_blame_status = cx.new(|_| git_ui::GitBlameStatus::default());
         let git_branch_status = cx.new(|cx| git_ui::GitBranchStatus::new(workspace, cx));
+        let git_remote_status = cx.new(|cx| git_ui::GitRemoteStatus::new(workspace, cx));
         let merge_conflict_indicator =
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
@@ -658,6 +659,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             );
             status_bar.add_left_item(vim_mode_indicator, window, cx);
             status_bar.add_left_item(vim_command_line, window, cx);
+            status_bar.add_center_item(git_remote_status, window, cx);
             status_bar.add_right_item(diagnostic_summary, window, cx);
             status_bar.add_right_item(git_branch_status, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);

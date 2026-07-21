@@ -96,6 +96,50 @@ use worktree::{
 };
 use zeroize::Zeroize;
 
+/// A git remote operation whose progress and result can be surfaced in the UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteOperationKind {
+    Fetch,
+    Pull,
+    Push,
+}
+
+impl RemoteOperationKind {
+    /// Present-progressive label, e.g. "Fetching".
+    pub fn in_progress_label(self) -> &'static str {
+        match self {
+            RemoteOperationKind::Fetch => "Fetching",
+            RemoteOperationKind::Pull => "Pulling",
+            RemoteOperationKind::Push => "Pushing",
+        }
+    }
+
+    /// Past-tense label for a successful operation, e.g. "Fetched".
+    pub fn finished_label(self) -> &'static str {
+        match self {
+            RemoteOperationKind::Fetch => "Fetched",
+            RemoteOperationKind::Pull => "Pulled",
+            RemoteOperationKind::Push => "Pushed",
+        }
+    }
+
+    /// Bare noun/verb for the operation, e.g. "Fetch" (used in "Fetch failed").
+    pub fn name(self) -> &'static str {
+        match self {
+            RemoteOperationKind::Fetch => "Fetch",
+            RemoteOperationKind::Pull => "Pull",
+            RemoteOperationKind::Push => "Push",
+        }
+    }
+}
+
+/// The outcome of a finished remote operation, surfaced briefly after it ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteOperationResult {
+    pub kind: RemoteOperationKind,
+    pub is_error: bool,
+}
+
 pub struct GitStore {
     state: GitStoreState,
     buffer_store: Entity<BufferStore>,
@@ -109,6 +153,13 @@ pub struct GitStore {
     diffs: HashMap<BufferId, Entity<BufferGitState>>,
     buffer_ids_by_index_text_buffer_id: HashMap<BufferId, BufferId>,
     shared_diffs: HashMap<proto::PeerId, HashMap<BufferId, SharedDiffs>>,
+    /// The in-flight remote operation (push/pull/fetch), if any, surfaced by the
+    /// status bar. Owned here rather than on the (transient) git panel so it is
+    /// observable regardless of whether a panel is open.
+    remote_operation: Option<RemoteOperationKind>,
+    /// The most recent finished remote operation, shown briefly then cleared.
+    remote_operation_result: Option<RemoteOperationResult>,
+    _remote_operation_result_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -746,6 +797,9 @@ impl GitStore {
             shared_diffs: HashMap::default(),
             diffs: HashMap::default(),
             buffer_ids_by_index_text_buffer_id: HashMap::default(),
+            remote_operation: None,
+            remote_operation_result: None,
+            _remote_operation_result_task: Task::ready(()),
         }
     }
 
@@ -973,6 +1027,55 @@ impl GitStore {
         self.active_repo_id
             .as_ref()
             .map(|id| self.repositories[id].clone())
+    }
+
+    /// The remote operation (push/pull/fetch) currently in flight, if any.
+    pub fn remote_operation(&self) -> Option<RemoteOperationKind> {
+        self.remote_operation
+    }
+
+    /// The result of the most recently finished remote operation, shown briefly.
+    pub fn remote_operation_result(&self) -> Option<RemoteOperationResult> {
+        self.remote_operation_result
+    }
+
+    /// Marks a remote operation as started so the UI can show progress, clearing
+    /// any previously displayed result.
+    pub fn start_remote_operation(&mut self, kind: RemoteOperationKind, cx: &mut Context<Self>) {
+        self.remote_operation = Some(kind);
+        self.remote_operation_result = None;
+        self._remote_operation_result_task = Task::ready(());
+        cx.notify();
+    }
+
+    /// Records a finished remote operation's result and clears it automatically
+    /// after a short delay.
+    pub fn finish_remote_operation(
+        &mut self,
+        result: RemoteOperationResult,
+        cx: &mut Context<Self>,
+    ) {
+        self.remote_operation = None;
+        self.remote_operation_result = Some(result);
+        cx.notify();
+        self._remote_operation_result_task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(5))
+                .await;
+            this.update(cx, |this, cx| {
+                this.remote_operation_result = None;
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// Clears the in-progress indicator without recording a result, for a remote
+    /// operation that ended without producing one (e.g. it was cancelled).
+    pub fn abort_remote_operation(&mut self, cx: &mut Context<Self>) {
+        if self.remote_operation.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn file_is_symlink(file: &File, cx: &App) -> bool {

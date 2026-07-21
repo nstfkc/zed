@@ -18,7 +18,7 @@ use gpui::{
     SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use menu::{Cancel, Confirm};
-use project::git_store::Repository;
+use project::git_store::{RemoteOperationKind, Repository};
 use project_diff::ProjectDiff;
 use time::OffsetDateTime;
 use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
@@ -30,7 +30,7 @@ use zed_actions;
 
 use crate::{
     commit_view::CommitView,
-    git_panel::{GitPanel, GitStatusEntry, RemoteOperationKind},
+    git_panel::{GitPanel, GitStatusEntry},
     solo_diff_view::SoloDiffView,
     text_diff_view::TextDiffView,
 };
@@ -47,6 +47,7 @@ pub mod created_worktrees;
 mod diff_multibuffer;
 pub mod file_diff_view;
 pub mod git_branch_status;
+pub mod git_remote_status;
 pub mod git_graph;
 pub mod git_panel;
 mod git_panel_settings;
@@ -75,6 +76,7 @@ pub mod worktree_service;
 pub use blame_ui::GitBlameStatus;
 pub use conflict_view::MergeConflictIndicator;
 pub use git_branch_status::GitBranchStatus;
+pub use git_remote_status::GitRemoteStatus;
 
 pub fn get_provider_icon(name: &str) -> IconName {
     match name {
@@ -840,8 +842,8 @@ fn render_remote_button(
 }
 
 mod remote_button {
-    use crate::git_panel::RemoteOperationKind;
     use gpui::{Action, Anchor, AnyView, ClickEvent, FocusHandle};
+    use project::git_store::RemoteOperationKind;
     use ui::{
         ButtonLike, CommonAnimationExt, ContextMenu, ElevationIndex, PopoverMenu,
         PopoverMenuHandle, SplitButton, Tooltip, prelude::*,
